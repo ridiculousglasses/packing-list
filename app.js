@@ -77,8 +77,7 @@ function matches(item) {
   for (const dim of Object.keys(S.filters)) {
     const f = S.filters[dim];
     if (f.size === 0) continue;
-    const key = dim === 'transport' ? 'transport' : dim;
-    const vals = Array.isArray(item[key]) ? item[key] : [item[key]];
+    const vals = Array.isArray(item[dim]) ? item[dim] : [item[dim]];
     if (vals.includes('all')) continue;
     if (![...f].some(v => vals.includes(v) || v==='all')) return false;
   }
