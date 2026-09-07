@@ -8,37 +8,37 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #ffffff;
-      --bg2: #f7f7f5;
-      --bg3: #efefed;
-      --border: #e0e0dc;
-      --border2: #d0d0cc;
-      --text: #1a1a18;
-      --text2: #6b6b67;
-      --text3: #9b9b97;
-      --green-bg: #e1f5ee;
-      --green-border: #9fe1cb;
-      --green-dark: #0f6e56;
-      --orange: #d85a30;
-      --orange-bg: #faece7;
-      --radius: 8px;
-      --radius-sm: 5px;
+      --bg: #ffffff; --bg2: #f7f7f5; --bg3: #efefed;
+      --border: #e0e0dc; --border2: #d0d0cc;
+      --text: #1a1a18; --text2: #6b6b67; --text3: #9b9b97;
+      --green-bg: #e1f5ee; --green-border: #9fe1cb; --green-dark: #0f6e56;
+      --orange: #d85a30; --orange-bg: #faece7;
+      --radius: 8px; --radius-sm: 5px;
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-    #app { max-width: 720px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
 
-    /* NAV */
-    nav { display: flex; gap: 6px; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+    /* SETUP SCREEN */
+    #setup { max-width: 440px; margin: 6rem auto; padding: 2rem; background: var(--bg2); border-radius: var(--radius); border: 1px solid var(--border); }
+    #setup h2 { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+    #setup p { font-size: 13px; color: var(--text2); margin-bottom: 1.25rem; line-height: 1.5; }
+    #setup input { width: 100%; padding: 8px 12px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: 10px; outline: none; font-family: monospace; }
+    #setup input:focus { border-color: var(--border2); }
+    #setup-error { font-size: 12px; color: var(--orange); margin-bottom: 8px; min-height: 16px; }
+
+    /* APP SHELL */
+    #app { max-width: 720px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+    nav { display: flex; gap: 6px; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; align-items: center; }
     .nav-btn { padding: 6px 14px; font-size: 13px; border: 1px solid var(--border); border-radius: 20px; background: var(--bg); color: var(--text2); cursor: pointer; transition: all .15s; }
     .nav-btn:hover { border-color: var(--border2); color: var(--text); }
     .nav-btn.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+    .nav-spacer { flex: 1; }
+    .nav-settings { font-size: 12px; color: var(--text3); cursor: pointer; background: none; border: none; padding: 4px; }
+    .nav-settings:hover { color: var(--text2); }
 
-    /* HEADER */
     .page-header { margin-bottom: 1.25rem; }
     .page-header h1 { font-size: 20px; font-weight: 600; margin-bottom: 3px; }
     .page-header p { font-size: 13px; color: var(--text2); }
 
-    /* FILTERS */
     .filter-block { margin-bottom: 1.25rem; }
     .filter-label { font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text3); margin-bottom: 6px; }
     .filter-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; align-items: center; }
@@ -47,7 +47,6 @@
     .chip:hover { border-color: var(--border2); color: var(--text); }
     .chip.on { background: var(--text); color: var(--bg); border-color: var(--text); }
 
-    /* CONTROLS */
     .controls { display: flex; gap: 8px; margin-bottom: 1.25rem; flex-wrap: wrap; }
     .search-wrap { flex: 1; min-width: 160px; }
     .search-wrap input { width: 100%; padding: 7px 12px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); outline: none; }
@@ -56,13 +55,11 @@
     .view-btn { padding: 6px 12px; font-size: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text2); cursor: pointer; }
     .view-btn.active { background: var(--text); color: var(--bg); border-color: var(--text); }
 
-    /* STATS */
     .stats { display: flex; gap: 10px; margin-bottom: 1.25rem; }
     .stat { background: var(--bg2); border-radius: var(--radius); padding: 10px 14px; flex: 1; }
     .stat-n { font-size: 22px; font-weight: 600; }
     .stat-l { font-size: 11px; color: var(--text2); margin-top: 2px; }
 
-    /* SECTION */
     .section { margin-bottom: 1.25rem; }
     .sec-hdr { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
     .sec-title-wrap { display: flex; align-items: center; gap: 6px; flex: 1; cursor: pointer; min-width: 0; }
@@ -76,7 +73,6 @@
     .sec-edit-btn i { font-size: 12px; color: var(--text3); }
     .sec-edit-input { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; border: none; border-bottom: 1px solid var(--border2); background: transparent; color: var(--text2); outline: none; width: 120px; }
 
-    /* ITEM ROW */
     .item-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--border); border-radius: 4px; transition: background .12s; position: relative; }
     .item-row:hover { background: var(--bg2); }
     .item-row.packed { background: var(--green-bg); border-bottom-color: var(--green-border); }
@@ -86,7 +82,6 @@
     .item-row.packed .item-name { font-weight: 500; }
     .item-edit-input { flex: 1; font-size: 14px; border: none; border-bottom: 1px solid var(--border2); background: transparent; outline: none; min-width: 0; }
 
-    /* STEPPER */
     .stepper { display: flex; align-items: center; flex-shrink: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
     .item-row.packed .stepper { border-color: var(--green-dark); }
     .step-btn { width: 26px; height: 26px; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; }
@@ -97,7 +92,6 @@
     .step-n { min-width: 24px; text-align: center; font-size: 13px; font-weight: 500; user-select: none; }
     .item-row.packed .step-n { color: var(--green-dark); }
 
-    /* ICON BTNS */
     .icon-btn { width: 24px; height: 24px; border-radius: 4px; border: none; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0; opacity: 0; transition: all .15s; }
     .item-row:hover .icon-btn { opacity: 1; }
     .icon-btn.active { opacity: 1; }
@@ -106,72 +100,80 @@
     .icon-btn.worn-btn.active i { color: #5050bb; }
     .icon-btn.flag-btn.active i { color: var(--orange); }
 
-    /* MOVE PICKER */
     .move-picker { position: absolute; right: 28px; top: 2px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); z-index: 10; min-width: 160px; padding: 4px 0; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
     .move-opt { padding: 7px 14px; font-size: 13px; cursor: pointer; white-space: nowrap; }
     .move-opt:hover { background: var(--bg2); }
     .move-opt.current { color: var(--text3); font-style: italic; cursor: default; }
 
-    /* ADD ROW */
     .add-row { display: flex; align-items: center; padding: 4px 8px 6px; }
     .add-trigger { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text3); cursor: pointer; padding: 4px 0; border: none; background: none; }
     .add-trigger:hover { color: var(--text2); }
     .add-input-row { display: none; align-items: center; gap: 6px; width: 100%; }
     .add-input-row.visible { display: flex; }
     .add-input-row input { flex: 1; font-size: 13px; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); outline: none; }
-    .add-input-row input:focus { border-color: var(--border2); }
     .add-confirm { padding: 4px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); cursor: pointer; }
     .add-cancel { width: 24px; height: 24px; border: none; background: none; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text3); }
 
-    /* TRIP BUILDER */
-    .trip-form { background: var(--bg2); border-radius: var(--radius); padding: 1rem; margin-bottom: 1.25rem; }
+    .trip-form { background: var(--bg2); border-radius: var(--radius); padding: 1rem; margin-bottom: 1.25rem; margin-top: 1.5rem; }
     .form-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
     .form-field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; }
     .form-field label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); }
     .form-field input, .form-field select { padding: 7px 10px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); outline: none; }
-    .form-field input:focus, .form-field select:focus { border-color: var(--border2); }
     .btn { padding: 8px 16px; font-size: 13px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid var(--border); background: var(--bg); color: var(--text); transition: all .15s; }
     .btn:hover { border-color: var(--border2); }
     .btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
     .btn.primary:hover { opacity: .88; }
-    .btn.danger { color: var(--orange); border-color: var(--orange-bg); }
     .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
-    /* TRIPS LIST */
     .trips-list { display: flex; flex-direction: column; gap: 10px; }
     .trip-card { background: var(--bg2); border-radius: var(--radius); padding: 14px 16px; border: 1px solid var(--border); cursor: pointer; transition: border-color .15s; }
     .trip-card:hover { border-color: var(--border2); }
-    .trip-card.active { border-color: var(--green-dark); background: var(--green-bg); }
     .trip-card-name { font-size: 15px; font-weight: 500; margin-bottom: 4px; }
     .trip-card-meta { font-size: 12px; color: var(--text2); display: flex; gap: 10px; flex-wrap: wrap; }
 
-    /* LOADING / EMPTY */
     .loading { padding: 3rem; text-align: center; color: var(--text3); font-size: 14px; }
-    .empty { padding: 2rem; text-align: center; color: var(--text3); font-size: 13px; }
-    .error-msg { background: var(--orange-bg); color: var(--orange); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 1rem; }
+    .empty   { padding: 2rem; text-align: center; color: var(--text3); font-size: 13px; }
+    .error-msg   { background: var(--orange-bg); color: var(--orange); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 1rem; }
+    .success-msg { background: var(--green-bg); color: var(--green-dark); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 1rem; }
 
-    /* HISTORY */
     .history-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .history-table th { text-align: left; padding: 6px 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); border-bottom: 1px solid var(--border); }
     .history-table td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    .history-table tr:last-child td { border-bottom: none; }
     .badge { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px; background: var(--bg2); color: var(--text2); }
-    .badge.worn { background: #f0f0ff; color: #5050bb; }
+    .badge.worn   { background: #f0f0ff; color: #5050bb; }
     .badge.packed { background: var(--green-bg); color: var(--green-dark); }
   </style>
 </head>
 <body>
-<div id="app">
-  <nav>
-    <button class="nav-btn active" onclick="showTab('pack')" id="tab-pack">Pack a trip</button>
-    <button class="nav-btn" onclick="showTab('trips')" id="tab-trips">My trips</button>
-    <button class="nav-btn" onclick="showTab('history')" id="tab-history">History</button>
-  </nav>
-  <div id="view-pack"></div>
-  <div id="view-trips" style="display:none"></div>
-  <div id="view-history" style="display:none"></div>
+
+<!-- SETUP SCREEN -->
+<div id="setup" style="display:none">
+  <h2>🧳 Packing List</h2>
+  <p>Enter your Notion integration token to connect your packing database. You only need to do this once on each device.</p>
+  <input type="password" id="token-input" placeholder="ntn_xxxxxxxxxxxxxxxxxxxx" onkeydown="if(event.key==='Enter')saveToken()">
+  <div id="setup-error"></div>
+  <div class="btn-row">
+    <button class="btn primary" onclick="saveToken()">Connect</button>
+  </div>
+  <p style="margin-top:1rem;font-size:12px;color:var(--text3)">Your token is stored only in this browser and never sent anywhere except Notion's API.</p>
 </div>
-<script src="config.js"></script>
+
+<!-- APP -->
+<div id="app-shell" style="display:none">
+  <div id="app">
+    <nav>
+      <button class="nav-btn active" onclick="showTab('pack')"    id="tab-pack">Pack a trip</button>
+      <button class="nav-btn"        onclick="showTab('trips')"   id="tab-trips">My trips</button>
+      <button class="nav-btn"        onclick="showTab('history')" id="tab-history">History</button>
+      <span class="nav-spacer"></span>
+      <button class="nav-settings" onclick="clearToken()" title="Disconnect Notion">⚙ Disconnect</button>
+    </nav>
+    <div id="view-pack"></div>
+    <div id="view-trips"   style="display:none"></div>
+    <div id="view-history" style="display:none"></div>
+  </div>
+</div>
+
 <script src="app.js"></script>
 </body>
 </html>
