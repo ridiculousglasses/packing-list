@@ -9,7 +9,12 @@ const DURS    = ['all','day trip','weekend+'];
 const TRANS   = ['all','day bag','checked bag'];
 const TYPES   = ['all','beach','concert','day trip','desert','formal','funeral','hiking','leisure','mountains','outdoor','road trip','wedding','work'];
 
+const CAT_COLORS = [
+  '#00d4aa','#ff6b6b','#ffd93d','#c77dff','#4cc9f0','#ff9a3c','#ff6eb4','#6bcb77','#a0c4ff'
+];
+
 let items=[], trips=[], tripItems={}, curTab='pack', nextId=9000;
+let catColorMap = {};
 
 let S = {
   qty:{}, flagged:new Set(),
@@ -54,7 +59,7 @@ function pv(props, name) {
 }
 
 async function loadItems() {
-  document.getElementById('view-pack').innerHTML = '<div class="loading">Loading your packing list from Notion…</div>';
+  document.getElementById('view-pack').innerHTML = '<div class="loading">Loading your packing list from Notion</div>';
   try {
     const pages = await fetchAll(MASTER);
     items = pages.map(p => ({
@@ -67,6 +72,10 @@ async function loadItems() {
       transport:  pv(p.properties,'On-Journey Transport') || ['all'],
       type:       pv(p.properties,'Type')                || ['all'],
     })).filter(i => i.name && i.cat);
+
+    const cats = [...new Set(items.map(i=>i.cat))].filter(Boolean);
+    cats.forEach((c,i) => { catColorMap[c] = CAT_COLORS[i % CAT_COLORS.length]; });
+
     renderPack();
   } catch(e) {
     document.getElementById('view-pack').innerHTML = `<div class="error-msg">Could not load from Notion: ${e.message}</div>`;
@@ -96,9 +105,9 @@ function getVis() {
 }
 
 function thtml(dim, vals) {
-  return vals.map(v =>
+  return `<div class="filter-row dim-${dim}">${vals.map(v =>
     `<span class="chip${S.filters[dim].has(v)?' on':''}" onclick="tf('${dim}','${v.replace(/'/g,"\\'")}')"> ${v}</span>`
-  ).join('');
+  ).join('')}</div>`;
 }
 
 function tf(dim, val) { S.filters[dim].has(val)?S.filters[dim].delete(val):S.filters[dim].add(val); renderPack(); }
@@ -115,11 +124,10 @@ function startSecEdit(c)   { S.editSec=c; S.editItem=null; S.moving=null; render
 function commitSecEdit(old) {
   const el=document.getElementById('sei-'+encodeURIComponent(old));
   const nw=el?.value.trim();
-  if(nw&&nw!==old) items.forEach(i=>{if(i.cat===old)i.cat=nw;});
+  if(nw&&nw!==old) { items.forEach(i=>{if(i.cat===old)i.cat=nw;}); catColorMap[nw]=catColorMap[old]; delete catColorMap[old]; }
   S.editSec=null; renderPack();
 }
 function secKey(e,c) { if(e.key==='Enter')commitSecEdit(c); if(e.key==='Escape'){S.editSec=null;renderPack();} }
-
 function startItemEdit(id) { S.editItem=id; S.editSec=null; S.moving=null; renderPack(); }
 function commitItemEdit(id) {
   const el=document.getElementById('iei-'+id);
@@ -128,7 +136,6 @@ function commitItemEdit(id) {
   S.editItem=null; renderPack();
 }
 function itemKey(e,id) { if(e.key==='Enter')commitItemEdit(id); if(e.key==='Escape'){S.editItem=null;renderPack();} }
-
 function showAdd(c)    { S.adding=c; S.moving=null; renderPack(); }
 function cancelAdd()   { S.adding=null; renderPack(); }
 function confirmAdd(c) {
@@ -139,11 +146,8 @@ function confirmAdd(c) {
   S.adding=null; renderPack();
 }
 function addKey(e,c) { if(e.key==='Enter')confirmAdd(c); if(e.key==='Escape')cancelAdd(); }
-
 document.addEventListener('click', e => {
-  if (S.moving && !e.target.closest('.move-picker') && !e.target.closest('.move-btn')) {
-    S.moving=null; renderPack();
-  }
+  if (S.moving && !e.target.closest('.move-picker') && !e.target.closest('.move-btn')) { S.moving=null; renderPack(); }
 });
 
 async function saveTrip() {
@@ -205,12 +209,17 @@ function renderPack() {
     const n=citems.filter(i=>(S.qty[i.id]||0)>0).length;
     const esec=S.editSec===cat;
     const safe=cat.replace(/'/g,"\\'"), enc=encodeURIComponent(cat);
+    const col=catColorMap[cat]||'#9090a8';
     const tit=esec
       ?`<input class="sec-edit-input" id="sei-${enc}" value="${cat}" onblur="commitSecEdit('${safe}')" onkeydown="secKey(event,'${safe}')" onclick="event.stopPropagation()">`
-      :`<span class="sec-title">${cat}</span>`;
+      :`<span class="sec-title" style="color:${col}">${cat}</span>`;
     list+=`<div class="section${coll?' collapsed':''}">
       <div class="sec-hdr">
-        <div class="sec-title-wrap" onclick="toggleSec('${safe}')">${tit}<i class="ti ti-chevron-down chevron" aria-hidden="true"></i></div>
+        <div class="sec-title-wrap" onclick="toggleSec('${safe}')">
+          <span class="sec-dot" style="background:${col}"></span>
+          ${tit}
+          <i class="ti ti-chevron-down chevron" aria-hidden="true"></i>
+        </div>
         <span class="sec-count">${n}/${citems.length}</span>
         <button class="sec-edit-btn" onclick="startSecEdit('${safe}')"><i class="ti ti-pencil" aria-hidden="true"></i></button>
       </div>`;
@@ -221,7 +230,7 @@ function renderPack() {
       const nm=ed
         ?`<input class="item-edit-input" id="iei-${item.id}" value="${item.name.replace(/"/g,'&quot;')}" onblur="commitItemEdit('${item.id}')" onkeydown="itemKey(event,'${item.id}')" onclick="event.stopPropagation()">`
         :`<span class="item-name">${item.name}</span>`;
-      const picker=mv?`<div class="move-picker"><div class="move-opt current">${item.cat}</div>${ocat.map(c=>`<div class="move-opt" onclick="moveItem('${item.id}','${c.replace(/'/g,"\\'")}')">→ ${c}</div>`).join('')}</div>`:'';
+      const picker=mv?`<div class="move-picker"><div class="move-opt current">${item.cat}</div>${ocat.map(c=>`<div class="move-opt" onclick="moveItem('${item.id}','${c.replace(/'/g,"\\'")}')"><span style="color:${catColorMap[c]||'#9090a8'}">●</span> ${c}</div>`).join('')}</div>`:'';
       list+=`<div class="item-row${pk?' packed':''}">
         ${nm}
         <div class="stepper">
@@ -265,13 +274,17 @@ function renderPack() {
   el.innerHTML=`
     <div class="page-header"><h1>Pack a trip</h1><p>Filter down, toggle items on, save when ready.</p></div>
     <div class="filter-block">
-      <div class="filter-label">Climate</div>
-      <div class="filter-row"><span class="filter-dim">Season</span>${thtml('season',SEASONS)}</div>
-      <div class="filter-row"><span class="filter-dim">Conditions</span>${thtml('conditions',CONDS)}</div>
-      <div class="filter-label" style="margin-top:8px">Logistics</div>
-      <div class="filter-row"><span class="filter-dim">Duration</span>${thtml('duration',DURS)}</div>
-      <div class="filter-row"><span class="filter-dim">Transport</span>${thtml('transport',TRANS)}</div>
-      <div class="filter-row"><span class="filter-dim">Trip type</span>${thtml('type',TYPES)}</div>
+      <div class="filter-section">
+        <div class="filter-label">Climate</div>
+        <div class="filter-row"><span class="filter-dim">Season</span>${`<div class="filter-row dim-season">${SEASONS.map(v=>`<span class="chip${S.filters.season.has(v)?' on':''}" onclick="tf('season','${v}')">${v}</span>`).join('')}</div>`}</div>
+        <div class="filter-row"><span class="filter-dim">Conditions</span>${`<div class="filter-row dim-conditions">${CONDS.map(v=>`<span class="chip${S.filters.conditions.has(v)?' on':''}" onclick="tf('conditions','${v.replace(/'/g,"\\'")}')"> ${v}</span>`).join('')}</div>`}</div>
+      </div>
+      <div class="filter-section">
+        <div class="filter-label">Logistics</div>
+        <div class="filter-row"><span class="filter-dim">Duration</span><div class="filter-row dim-duration">${DURS.map(v=>`<span class="chip${S.filters.duration.has(v)?' on':''}" onclick="tf('duration','${v}')">${v}</span>`).join('')}</div></div>
+        <div class="filter-row"><span class="filter-dim">Transport</span><div class="filter-row dim-transport">${TRANS.map(v=>`<span class="chip${S.filters.transport.has(v)?' on':''}" onclick="tf('transport','${v}')">${v}</span>`).join('')}</div></div>
+        <div class="filter-row"><span class="filter-dim">Trip type</span><div class="filter-row dim-type">${TYPES.map(v=>`<span class="chip${S.filters.type.has(v)?' on':''}" onclick="tf('type','${v.replace(/'/g,"\\'")}')"> ${v}</span>`).join('')}</div></div>
+      </div>
     </div>
     <div class="controls">
       <div class="search-wrap"><input type="text" id="pack-search" placeholder="Search items…" oninput="renderPack()"></div>
@@ -283,8 +296,8 @@ function renderPack() {
     </div>
     <div class="stats">
       <div class="stat"><div class="stat-n">${vis.length}</div><div class="stat-l">visible</div></div>
-      <div class="stat"><div class="stat-n">${packed}</div><div class="stat-l">packed</div></div>
-      <div class="stat"><div class="stat-n">${flagged}</div><div class="stat-l">flagged</div></div>
+      <div class="stat"><div class="stat-n packed-color">${packed}</div><div class="stat-l">packed</div></div>
+      <div class="stat"><div class="stat-n flagged-color">${flagged}</div><div class="stat-l">flagged</div></div>
     </div>
     ${list}${form}`;
 
@@ -295,7 +308,7 @@ function renderPack() {
 
 async function renderTrips() {
   const el=document.getElementById('view-trips');
-  el.innerHTML='<div class="loading">Loading trips…</div>';
+  el.innerHTML='<div class="loading">Loading trips</div>';
   try {
     if(!trips.length){
       const pages=await fetchAll(TRIPS);
@@ -318,7 +331,7 @@ async function renderTrips() {
 
 async function openTrip(tid, tname) {
   const el=document.getElementById('view-trips');
-  el.innerHTML='<div class="loading">Loading trip…</div>';
+  el.innerHTML='<div class="loading">Loading trip</div>';
   try {
     if(!tripItems[tid]){
       const pages=await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:tid}});
@@ -330,14 +343,15 @@ async function openTrip(tid, tname) {
     const pitems=tripItems[tid]||[];
     const cats=[...new Set(pitems.map(i=>i.cat))];
     let html=`<div class="page-header"><h1>${tname}</h1></div>
-      <div class="btn-row" style="margin-bottom:1rem"><button class="btn" onclick="renderTrips()">← Back</button></div>`;
+      <div class="btn-row" style="margin-bottom:1.25rem"><button class="btn" onclick="renderTrips()">← Back</button></div>`;
     for(const cat of cats){
       const ci=pitems.filter(i=>i.cat===cat);
-      html+=`<div class="section"><div class="sec-hdr"><div class="sec-title-wrap"><span class="sec-title">${cat}</span></div><span class="sec-count">${ci.length}</span></div>`;
+      const col=catColorMap[cat]||'#9090a8';
+      html+=`<div class="section"><div class="sec-hdr"><div class="sec-title-wrap"><span class="sec-dot" style="background:${col}"></span><span class="sec-title" style="color:${col}">${cat}</span></div><span class="sec-count">${ci.length}</span></div>`;
       for(const item of ci){
         html+=`<div class="item-row${item.packed?' packed':''}">
           <span class="item-name">${item.name}</span>
-          <span style="font-size:12px;color:var(--text3);margin-right:8px">×${item.qty}</span>
+          <span style="font-size:12px;color:var(--text3);margin-right:8px;font-family:'DM Mono',monospace">×${item.qty}</span>
           <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer">
             <input type="checkbox" ${item.worn?'checked':''} onchange="updateWorn('${tid}','${item.id}',this.checked)"> Worn/used
           </label>
@@ -359,7 +373,7 @@ async function updateWorn(tid, pid, val) {
 
 async function renderHistory() {
   const el=document.getElementById('view-history');
-  el.innerHTML='<div class="loading">Loading history…</div>';
+  el.innerHTML='<div class="loading">Loading history</div>';
   try {
     if(!trips.length){
       const pages=await fetchAll(TRIPS);
@@ -381,7 +395,7 @@ async function renderHistory() {
       <table class="history-table"><thead><tr><th>Item</th><th>Trips packed</th><th>Worn</th></tr></thead><tbody>`;
     for(const [name,recs] of Object.entries(hist).sort((a,b)=>b[1].length-a[1].length)){
       const w=recs.filter(r=>r.worn).length;
-      html+=`<tr><td>${name}</td><td><span class="badge packed">${recs.length}×</span> ${recs.map(r=>r.trip).join(', ')}</td><td>${w>0?`<span class="badge worn">${w}×</span>`:'<span style="color:var(--text3)">—</span>'}</td></tr>`;
+      html+=`<tr><td>${name}</td><td><span class="badge packed">${recs.length}×</span> <span style="color:var(--text2)">${recs.map(r=>r.trip).join(', ')}</span></td><td>${w>0?`<span class="badge worn">${w}×</span>`:'<span style="color:var(--text3)">—</span>'}</td></tr>`;
     }
     el.innerHTML=html+'</tbody></table>';
   } catch(e){el.innerHTML=`<div class="error-msg">Error: ${e.message}</div>`;}
@@ -397,6 +411,6 @@ function showTab(t) {
   if(t==='history') renderHistory();
 }
 
-async function reload() { items=[]; trips=[]; tripItems={}; await loadItems(); }
+async function reload() { items=[]; trips=[]; tripItems={}; catColorMap={}; await loadItems(); }
 
 loadItems();
