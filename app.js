@@ -1,460 +1,403 @@
-// ─── Config / Setup ───────────────────────────────────────────────────────────
-function getToken() { return localStorage.getItem('notion_token') || ''; }
-function getMasterDbId() { return '18f5a4e7ab114c4c9f014d908c2fadd6'; }
-function getTripsDbId()  { return '550336b247364defb7594675f913ac11'; }
-function getItemsDbId()  { return 'e7d2a1f307704a52986a9d66e50bba2b'; }
+const WORKER = 'https://packing-proxy.big-glasses.workers.dev/notion';
+const MASTER = '18f5a4e7ab114c4c9f014d908c2fadd6';
+const TRIPS  = '550336b247364defb7594675f913ac11';
+const TITEMS = 'e7d2a1f307704a52986a9d66e50bba2b';
 
-function showSetup(errorMsg = '') {
-  document.getElementById('setup').style.display = '';
-  document.getElementById('app-shell').style.display = 'none';
-  if (errorMsg) document.getElementById('setup-error').textContent = errorMsg;
-}
+const SEASONS = ['all','spring','summer','fall','winter'];
+const CONDS   = ['all','cold','heat','humid','mixed/unpredictable','rain/wet','sun'];
+const DURS    = ['all','day trip','weekend+'];
+const TRANS   = ['all','day bag','checked bag'];
+const TYPES   = ['all','beach','concert','day trip','desert','formal','funeral','hiking','leisure','mountains','outdoor','road trip','wedding','work'];
 
-function saveToken() {
-  const token = document.getElementById('token-input').value.trim();
-  if (!token) { document.getElementById('setup-error').textContent = 'Please enter your token.'; return; }
-  localStorage.setItem('notion_token', token);
-  init();
-}
+let items=[], trips=[], tripItems={}, curTab='pack', nextId=9000;
 
-function clearToken() {
-  localStorage.removeItem('notion_token');
-  showSetup();
-}
+let S = {
+  qty:{}, flagged:new Set(),
+  filters:{ season:new Set(), conditions:new Set(), duration:new Set(), transport:new Set(), type:new Set() },
+  collapsed:new Set(), moving:null, editItem:null, editSec:null, adding:null,
+  view:'all',
+  form:{ name:'', destination:'', season:'', duration:'', transport:'', type:[] },
+  saving:false, msg:'', msgOk:false,
+};
 
-// ─── Notion API ───────────────────────────────────────────────────────────────
-const NOTION_VERSION = '2022-06-28';
-
-async function notionFetch(path, method = 'GET', body = null) {
-  const res = await fetch(`https://api.notion.com/v1${path}`, {
+async function nfetch(path, method='GET', body=null) {
+  const r = await fetch(WORKER + path, {
     method,
-    headers: {
-      'Authorization': `Bearer ${getToken()}`,
-      'Notion-Version': NOTION_VERSION,
-      'Content-Type': 'application/json',
-    },
-    body: body ? JSON.stringify(body) : null,
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    if (res.status === 401) throw new Error('UNAUTHORIZED');
-    throw new Error(err.message || `Notion API error ${res.status}`);
-  }
-  return res.json();
+  return r.json();
 }
 
-async function queryDatabase(dbId, filter = null, sorts = null) {
-  const body = {};
-  if (filter) body.filter = filter;
-  if (sorts)  body.sorts  = sorts;
-  const pages = [];
+async function fetchAll(dbId, filter=null) {
+  const pages=[], body=filter?{filter}:{};
   let cursor;
   do {
     if (cursor) body.start_cursor = cursor;
-    const data = await notionFetch(`/databases/${dbId}/query`, 'POST', body);
-    pages.push(...data.results);
-    cursor = data.next_cursor;
+    const d = await nfetch(`/databases/${dbId}/query`, 'POST', body);
+    if (d.results) pages.push(...d.results);
+    cursor = d.next_cursor;
   } while (cursor);
   return pages;
 }
 
-function propText(page, name) {
-  const p = page.properties[name];
+function pv(props, name) {
+  const p = props?.[name];
   if (!p) return '';
-  if (p.type === 'title')        return p.title.map(t => t.plain_text).join('');
-  if (p.type === 'rich_text')    return p.rich_text.map(t => t.plain_text).join('');
-  if (p.type === 'select')       return p.select?.name || '';
-  if (p.type === 'multi_select') return p.multi_select.map(s => s.name);
-  if (p.type === 'number')       return p.number;
-  if (p.type === 'checkbox')     return p.checkbox;
+  if (p.type==='title')        return p.title?.map(t=>t.plain_text).join('')||'';
+  if (p.type==='rich_text')    return p.rich_text?.map(t=>t.plain_text).join('')||'';
+  if (p.type==='select')       return p.select?.name||'';
+  if (p.type==='multi_select') return p.multi_select?.map(s=>s.name)||[];
+  if (p.type==='number')       return p.number;
+  if (p.type==='checkbox')     return p.checkbox;
   return '';
 }
 
-// ─── State ────────────────────────────────────────────────────────────────────
-let masterItems = [];
-let trips       = [];
-let tripItems   = {};
-let currentTab  = 'pack';
-
-let packState = {
-  qty: {}, worn: new Set(), flagged: new Set(),
-  filters: { season: new Set(), conditions: new Set(), duration: new Set(), transport: new Set(), type: new Set() },
-  collapsed: new Set(), moving: null, editingItem: null, editingSection: null, adding: null,
-  view: 'all',
-  tripForm: { name: '', destination: '', season: '', duration: '', transport: '', type: [], conditions: [] },
-  saving: false, saveMsg: '',
-};
-
-const TAGS = {
-  season:     ['spring','summer','fall','winter'],
-  conditions: ['rain/wet','humid','mixed/unpredictable'],
-  duration:   ['weekend','week','2+ weeks'],
-  transport:  ['carry-on','checked bag','road trip'],
-  type:       ['leisure','work','outdoor','formal'],
-};
-const ALL=['spring','summer','fall','winter'], ALL_C=['rain/wet','humid','mixed/unpredictable'],
-      ALL_D=['weekend','week','2+ weeks'], ALL_T=['carry-on','checked bag','road trip'],
-      ALL_Y=['leisure','work','outdoor','formal'];
-
-// ─── Load data ────────────────────────────────────────────────────────────────
-async function loadMasterItems() {
-  const pages = await queryDatabase(getMasterDbId(), null, [{ property: 'Category', direction: 'ascending' }]);
-  masterItems = pages.map(p => ({
-    id: p.id, name: propText(p,'Item'), cat: propText(p,'Category'),
-    season:     propText(p,'Season')     || ALL,
-    conditions: propText(p,'Conditions') || ALL_C,
-    duration:   propText(p,'Duration')   || ALL_D,
-    transport:  propText(p,'Transport')  || ALL_T,
-    type:       propText(p,'Trip type')  || ALL_Y,
-  }));
-}
-
-async function loadTrips() {
-  const pages = await queryDatabase(getTripsDbId(), null, [{ timestamp: 'created_time', direction: 'descending' }]);
-  trips = pages.map(p => ({
-    id: p.id, name: propText(p,'Trip name'), destination: propText(p,'Destination'),
-    season: propText(p,'Season'), duration: propText(p,'Duration'),
-    transport: propText(p,'Transport'), type: propText(p,'Trip type'),
-    conditions: propText(p,'Conditions'), created: p.created_time,
-  }));
-}
-
-async function loadTripItems(tripId) {
-  if (tripItems[tripId]) return;
-  const pages = await queryDatabase(getItemsDbId(), { property: 'Trip name', rich_text: { equals: tripId } });
-  tripItems[tripId] = pages.map(p => ({
-    id: p.id, name: propText(p,'Item name'), cat: propText(p,'Category'),
-    qty: propText(p,'Quantity') || 1, packed: propText(p,'Packed'),
-    worn: propText(p,'Worn/Used'), notionId: p.id,
-  }));
-}
-
-// ─── Save trip ────────────────────────────────────────────────────────────────
-async function saveTrip() {
-  const f = packState.tripForm;
-  if (!f.name) { packState.saveMsg = 'Please enter a trip name.'; renderPack(); return; }
-  packState.saving = true; packState.saveMsg = ''; renderPack();
+async function loadItems() {
+  document.getElementById('view-pack').innerHTML = '<div class="loading">Loading your packing list from Notion…</div>';
   try {
-    const tripPage = await notionFetch('/pages', 'POST', {
-      parent: { database_id: getTripsDbId() },
-      properties: {
-        'Trip name':   { title: [{ text: { content: f.name } }] },
-        'Destination': { rich_text: [{ text: { content: f.destination } }] },
-        'Season':      f.season    ? { select: { name: f.season } }    : undefined,
-        'Duration':    f.duration  ? { select: { name: f.duration } }  : undefined,
-        'Transport':   f.transport ? { select: { name: f.transport } } : undefined,
-        'Trip type':   f.type.length      ? { multi_select: f.type.map(n=>({name:n})) }      : undefined,
-        'Conditions':  f.conditions.length ? { multi_select: f.conditions.map(n=>({name:n})) } : undefined,
-      },
-    });
-    const tripId = tripPage.id;
-    const packed = Object.entries(packState.qty).filter(([,q])=>q>0).map(([id])=>id);
-    for (const itemId of packed) {
-      const item = masterItems.find(i=>i.id===itemId);
-      if (!item) continue;
-      await notionFetch('/pages', 'POST', {
-        parent: { database_id: getItemsDbId() },
-        properties: {
-          'Item name': { title: [{ text: { content: item.name } }] },
-          'Trip name': { rich_text: [{ text: { content: tripId } }] },
-          'Category':  { select: { name: item.cat } },
-          'Quantity':  { number: packState.qty[itemId] },
-          'Packed':    { checkbox: true },
-          'Worn/Used': { checkbox: packState.worn.has(itemId) },
-        },
-      });
-    }
-    packState.saving = false;
-    packState.saveMsg = `✓ "${f.name}" saved!`;
-    packState.qty = {}; packState.worn = new Set(); packState.flagged = new Set();
-    packState.tripForm = { name:'', destination:'', season:'', duration:'', transport:'', type:[], conditions:[] };
-    trips = [];
+    const pages = await fetchAll(MASTER);
+    items = pages.map(p => ({
+      id: p.id,
+      name: pv(p.properties,'Item'),
+      cat:  pv(p.properties,'Category'),
+      season:     pv(p.properties,'Season')               || ['all'],
+      conditions: pv(p.properties,'Conditions')          || ['all'],
+      duration:   pv(p.properties,'Duration')            || ['all'],
+      transport:  pv(p.properties,'On-Journey Transport') || ['all'],
+      type:       pv(p.properties,'Type')                || ['all'],
+    })).filter(i => i.name && i.cat);
     renderPack();
   } catch(e) {
-    packState.saving = false;
-    packState.saveMsg = `Error: ${e.message}`;
-    renderPack();
+    document.getElementById('view-pack').innerHTML = `<div class="error-msg">Could not load from Notion: ${e.message}</div>`;
   }
 }
 
-async function updateTripItem(notionId, field, value) {
-  await notionFetch(`/pages/${notionId}`, 'PATCH', { properties: { [field]: { checkbox: value } } });
-}
-
-// ─── Tab switching ────────────────────────────────────────────────────────────
-function showTab(tab) {
-  currentTab = tab;
-  ['pack','trips','history'].forEach(t => {
-    document.getElementById(`view-${t}`).style.display = t === tab ? '' : 'none';
-    document.getElementById(`tab-${t}`).className = 'nav-btn' + (t === tab ? ' active' : '');
-  });
-  if (tab === 'trips')   renderTrips();
-  if (tab === 'history') renderHistory();
-}
-
-// ─── Filter helpers ───────────────────────────────────────────────────────────
-function toggleFilter(dim, val) {
-  packState.filters[dim].has(val) ? packState.filters[dim].delete(val) : packState.filters[dim].add(val);
-  renderPack();
-}
-function matchesFilters(item) {
-  for (const dim of Object.keys(packState.filters)) {
-    const f = packState.filters[dim];
+function matches(item) {
+  for (const dim of Object.keys(S.filters)) {
+    const f = S.filters[dim];
     if (f.size === 0) continue;
-    const vals = Array.isArray(item[dim]) ? item[dim] : [item[dim]];
-    if (![...f].some(v => vals.includes(v))) return false;
+    const key = dim === 'transport' ? 'transport' : dim;
+    const vals = Array.isArray(item[key]) ? item[key] : [item[key]];
+    if (vals.includes('all')) continue;
+    if (![...f].some(v => vals.includes(v) || v==='all')) return false;
   }
   return true;
 }
-function getVisible() {
-  const q = document.getElementById('pack-search')?.value.toLowerCase() || '';
-  return masterItems.filter(item => {
-    if (!matchesFilters(item)) return false;
-    if (q && !item.name.toLowerCase().includes(q)) return false;
-    if (packState.view === 'packed'  && !(packState.qty[item.id] > 0)) return false;
-    if (packState.view === 'flagged' && !packState.flagged.has(item.id)) return false;
+
+function getVis() {
+  const q = document.getElementById('pack-search')?.value.toLowerCase()||'';
+  return items.filter(i => {
+    if (!matches(i)) return false;
+    if (q && !i.name.toLowerCase().includes(q)) return false;
+    if (S.view==='packed'  && !((S.qty[i.id]||0)>0)) return false;
+    if (S.view==='flagged' && !S.flagged.has(i.id))  return false;
     return true;
   });
 }
-function tagsHtml(dim, vals) {
-  return vals.map(v => `<span class="chip${packState.filters[dim].has(v)?' on':''}" onclick="toggleFilter('${dim}','${v}')">${v}</span>`).join('');
+
+function thtml(dim, vals) {
+  return vals.map(v =>
+    `<span class="chip${S.filters[dim].has(v)?' on':''}" onclick="tf('${dim}','${v.replace(/'/g,"\\'")}')"> ${v}</span>`
+  ).join('');
 }
 
-// ─── Pack view ────────────────────────────────────────────────────────────────
+function tf(dim, val) { S.filters[dim].has(val)?S.filters[dim].delete(val):S.filters[dim].add(val); renderPack(); }
+function sv(v) { S.view=v; renderPack(); }
+function toggleSec(c) { S.collapsed.has(c)?S.collapsed.delete(c):S.collapsed.add(c); renderPack(); }
+function stepUp(id)   { S.qty[id]=(S.qty[id]||0)+1; renderPack(); }
+function stepDown(id) { S.qty[id]=Math.max(0,(S.qty[id]||0)-1); renderPack(); }
+function toggleFlag(id) { S.flagged.has(id)?S.flagged.delete(id):S.flagged.add(id); renderPack(); }
+function clearPack()  { S.qty={}; S.flagged=new Set(); renderPack(); }
+function toggleMove(id) { S.moving=S.moving===id?null:id; renderPack(); }
+function moveItem(id,cat) { const i=items.find(x=>x.id===id); if(i)i.cat=cat; S.moving=null; renderPack(); }
+
+function startSecEdit(c)   { S.editSec=c; S.editItem=null; S.moving=null; renderPack(); }
+function commitSecEdit(old) {
+  const el=document.getElementById('sei-'+encodeURIComponent(old));
+  const nw=el?.value.trim();
+  if(nw&&nw!==old) items.forEach(i=>{if(i.cat===old)i.cat=nw;});
+  S.editSec=null; renderPack();
+}
+function secKey(e,c) { if(e.key==='Enter')commitSecEdit(c); if(e.key==='Escape'){S.editSec=null;renderPack();} }
+
+function startItemEdit(id) { S.editItem=id; S.editSec=null; S.moving=null; renderPack(); }
+function commitItemEdit(id) {
+  const el=document.getElementById('iei-'+id);
+  const i=items.find(x=>x.id===id);
+  if(i&&el?.value.trim()) i.name=el.value.trim();
+  S.editItem=null; renderPack();
+}
+function itemKey(e,id) { if(e.key==='Enter')commitItemEdit(id); if(e.key==='Escape'){S.editItem=null;renderPack();} }
+
+function showAdd(c)    { S.adding=c; S.moving=null; renderPack(); }
+function cancelAdd()   { S.adding=null; renderPack(); }
+function confirmAdd(c) {
+  const inp=document.getElementById('ai-'+encodeURIComponent(c));
+  const n=inp?.value.trim();
+  if(!n){cancelAdd();return;}
+  items.push({id:'local-'+(nextId++),name:n,cat:c,season:['all'],conditions:['all'],duration:['all'],transport:['all'],type:['all']});
+  S.adding=null; renderPack();
+}
+function addKey(e,c) { if(e.key==='Enter')confirmAdd(c); if(e.key==='Escape')cancelAdd(); }
+
+document.addEventListener('click', e => {
+  if (S.moving && !e.target.closest('.move-picker') && !e.target.closest('.move-btn')) {
+    S.moving=null; renderPack();
+  }
+});
+
+async function saveTrip() {
+  const f=S.form;
+  if(!f.name){S.msg='Enter a trip name.';S.msgOk=false;renderPack();return;}
+  const packed=Object.entries(S.qty).filter(([,q])=>q>0).map(([id])=>id);
+  if(!packed.length){S.msg='No items packed yet.';S.msgOk=false;renderPack();return;}
+  S.saving=true; S.msg=''; renderPack();
+  try {
+    const tp = await nfetch('/pages','POST',{
+      parent:{database_id:TRIPS},
+      properties:{
+        'Trip name':  {title:[{text:{content:f.name}}]},
+        'Destination':{rich_text:[{text:{content:f.destination||''}}]},
+        ...(f.season   ?{'Season':   {select:{name:f.season}}}   :{}),
+        ...(f.duration ?{'Duration': {select:{name:f.duration}}} :{}),
+        ...(f.transport?{'Transport':{select:{name:f.transport}}}:{}),
+        ...(f.type.length?{'Trip type':{multi_select:f.type.map(n=>({name:n}))}}:{}),
+      }
+    });
+    const tid=tp.id;
+    for (const iid of packed) {
+      const item=items.find(i=>i.id===iid);
+      if(!item) continue;
+      await nfetch('/pages','POST',{
+        parent:{database_id:TITEMS},
+        properties:{
+          'Item name':{title:[{text:{content:item.name}}]},
+          'Trip name':{rich_text:[{text:{content:tid}}]},
+          'Category': {select:{name:item.cat}},
+          'Quantity': {number:S.qty[iid]},
+          'Packed':   {checkbox:true},
+          'Worn/Used':{checkbox:false},
+        }
+      });
+    }
+    S.saving=false; S.msg=`"${f.name}" saved to Notion!`; S.msgOk=true;
+    S.qty={}; S.flagged=new Set();
+    S.form={name:'',destination:'',season:'',duration:'',transport:'',type:[]};
+    trips=[];
+    renderPack();
+  } catch(e) { S.saving=false; S.msg='Error: '+e.message; S.msgOk=false; renderPack(); }
+}
+
 function renderPack() {
-  const el = document.getElementById('view-pack');
-  if (!el) return;
-  const visible = getVisible();
-  const cats = [...new Set(masterItems.map(i => i.cat))];
-  const packed  = visible.filter(i => packState.qty[i.id] > 0).length;
-  const flagged = visible.filter(i => packState.flagged.has(i.id)).length;
+  const el=document.getElementById('view-pack');
+  if(!el) return;
+  const vis=getVis();
+  const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean);
+  const packed=vis.filter(i=>(S.qty[i.id]||0)>0).length;
+  const flagged=vis.filter(i=>S.flagged.has(i.id)).length;
+  const q=document.getElementById('pack-search')?.value||'';
+  const catsToShow=S.view==='all'&&!q ? cats : [...new Set(vis.map(i=>i.cat))];
 
-  const filterHtml = `<div class="filter-block">
-    <div class="filter-label">Climate</div>
-    <div class="filter-row"><span class="filter-dim">Season</span>${tagsHtml('season',TAGS.season)}</div>
-    <div class="filter-row"><span class="filter-dim">Conditions</span>${tagsHtml('conditions',TAGS.conditions)}</div>
-    <div class="filter-label" style="margin-top:8px">Logistics</div>
-    <div class="filter-row"><span class="filter-dim">Duration</span>${tagsHtml('duration',TAGS.duration)}</div>
-    <div class="filter-row"><span class="filter-dim">Transport</span>${tagsHtml('transport',TAGS.transport)}</div>
-    <div class="filter-row"><span class="filter-dim">Trip type</span>${tagsHtml('type',TAGS.type)}</div>
-  </div>`;
-
-  const catsToShow = packState.view === 'all' && !document.getElementById('pack-search')?.value
-    ? cats : [...new Set(visible.map(i => i.cat))];
-
-  let listHtml = '';
+  let list='';
   for (const cat of catsToShow) {
-    const items = visible.filter(i => i.cat === cat);
-    const collapsed = packState.collapsed.has(cat);
-    const n = items.filter(i => packState.qty[i.id] > 0).length;
-    const editing = packState.editingSection === cat;
-    const safe = cat.replace(/'/g,"\\'"), enc = encodeURIComponent(cat);
-    const titleHtml = editing
-      ? `<input class="sec-edit-input" id="sec-edit-${enc}" value="${cat}" onblur="commitSecEdit('${safe}')" onkeydown="secEditKey(event,'${safe}')" onclick="event.stopPropagation()">`
-      : `<span class="sec-title">${cat}</span>`;
-    listHtml += `<div class="section${collapsed?' collapsed':''}">
+    const citems=vis.filter(i=>i.cat===cat);
+    const coll=S.collapsed.has(cat);
+    const n=citems.filter(i=>(S.qty[i.id]||0)>0).length;
+    const esec=S.editSec===cat;
+    const safe=cat.replace(/'/g,"\\'"), enc=encodeURIComponent(cat);
+    const tit=esec
+      ?`<input class="sec-edit-input" id="sei-${enc}" value="${cat}" onblur="commitSecEdit('${safe}')" onkeydown="secKey(event,'${safe}')" onclick="event.stopPropagation()">`
+      :`<span class="sec-title">${cat}</span>`;
+    list+=`<div class="section${coll?' collapsed':''}">
       <div class="sec-hdr">
-        <div class="sec-title-wrap" onclick="toggleSec('${safe}')">${titleHtml}<i class="ti ti-chevron-down chevron"></i></div>
-        <span class="sec-count">${n}/${items.length}</span>
-        <button class="sec-edit-btn" onclick="startSecEdit('${safe}')"><i class="ti ti-pencil"></i></button>
+        <div class="sec-title-wrap" onclick="toggleSec('${safe}')">${tit}<i class="ti ti-chevron-down chevron" aria-hidden="true"></i></div>
+        <span class="sec-count">${n}/${citems.length}</span>
+        <button class="sec-edit-btn" onclick="startSecEdit('${safe}')"><i class="ti ti-pencil" aria-hidden="true"></i></button>
       </div>`;
-    for (const item of items) {
-      const qty=packState.qty[item.id]||0, isPacked=qty>0;
-      const isWorn=packState.worn.has(item.id), isFlagged=packState.flagged.has(item.id);
-      const isMoving=packState.moving===item.id, isEditing=packState.editingItem===item.id;
-      const otherCats = cats.filter(c=>c!==item.cat);
-      const nameHtml = isEditing
-        ? `<input class="item-edit-input" id="item-edit-${item.id}" value="${item.name.replace(/"/g,'&quot;')}" onblur="commitItemEdit('${item.id}')" onkeydown="itemEditKey(event,'${item.id}')" onclick="event.stopPropagation()">`
-        : `<span class="item-name">${item.name}</span>`;
-      const pickerHtml = isMoving
-        ? `<div class="move-picker"><div class="move-opt current">${item.cat}</div>${otherCats.map(c=>`<div class="move-opt" onclick="moveItem('${item.id}','${c.replace(/'/g,"\\'")}')">→ ${c}</div>`).join('')}</div>`
-        : '';
-      listHtml += `<div class="item-row${isPacked?' packed':''}${isWorn?' worn':''}">
-        ${nameHtml}
+    for (const item of citems) {
+      const qty=S.qty[item.id]||0, pk=qty>0, fl=S.flagged.has(item.id);
+      const mv=S.moving===item.id, ed=S.editItem===item.id;
+      const ocat=cats.filter(c=>c!==item.cat);
+      const nm=ed
+        ?`<input class="item-edit-input" id="iei-${item.id}" value="${item.name.replace(/"/g,'&quot;')}" onblur="commitItemEdit('${item.id}')" onkeydown="itemKey(event,'${item.id}')" onclick="event.stopPropagation()">`
+        :`<span class="item-name">${item.name}</span>`;
+      const picker=mv?`<div class="move-picker"><div class="move-opt current">${item.cat}</div>${ocat.map(c=>`<div class="move-opt" onclick="moveItem('${item.id}','${c.replace(/'/g,"\\'")}')">→ ${c}</div>`).join('')}</div>`:'';
+      list+=`<div class="item-row${pk?' packed':''}">
+        ${nm}
         <div class="stepper">
-          <button class="step-btn" onclick="stepDown('${item.id}')"><i class="ti ti-minus"></i></button>
+          <button class="step-btn" onclick="stepDown('${item.id}')"><i class="ti ti-minus" aria-hidden="true"></i></button>
           <span class="step-n">${qty}</span>
-          <button class="step-btn" onclick="stepUp('${item.id}')"><i class="ti ti-plus"></i></button>
+          <button class="step-btn" onclick="stepUp('${item.id}')"><i class="ti ti-plus" aria-hidden="true"></i></button>
         </div>
-        <button class="icon-btn worn-btn${isWorn?' active':''}" onclick="toggleWorn('${item.id}')" title="Worn/used"><i class="ti ti-shirt"></i></button>
-        <button class="icon-btn flag-btn${isFlagged?' active':''}" onclick="toggleFlag('${item.id}')" title="Flag: never used"><i class="ti ti-flag-2"></i></button>
-        <button class="icon-btn" onclick="startItemEdit('${item.id}')" title="Rename"><i class="ti ti-pencil"></i></button>
-        <button class="icon-btn move-btn" onclick="toggleMove('${item.id}')" title="Move section"><i class="ti ti-arrows-move"></i></button>
-        ${pickerHtml}
+        <button class="icon-btn flag${fl?' active':''}" onclick="toggleFlag('${item.id}')" title="Flag: never used"><i class="ti ti-flag-2" aria-hidden="true"></i></button>
+        <button class="icon-btn" onclick="startItemEdit('${item.id}')" title="Rename"><i class="ti ti-pencil" aria-hidden="true"></i></button>
+        <button class="icon-btn move-btn" onclick="toggleMove('${item.id}')" title="Move section"><i class="ti ti-arrows-move" aria-hidden="true"></i></button>
+        ${picker}
       </div>`;
     }
-    const isAdding = packState.adding === cat;
-    listHtml += `<div class="add-row">${isAdding
-      ? `<div class="add-input-row visible"><input type="text" id="add-input-${enc}" placeholder="Item name…" onkeydown="addKey(event,'${safe}')"><button class="add-confirm btn" onclick="confirmAdd('${safe}')">Add</button><button class="add-cancel" onclick="cancelAdd()"><i class="ti ti-x"></i></button></div>`
-      : `<button class="add-trigger" onclick="showAdd('${safe}')"><i class="ti ti-plus"></i> Add item</button>`
+    const ia=S.adding===cat;
+    list+=`<div class="add-row">${ia
+      ?`<div class="add-input-row visible"><input type="text" id="ai-${enc}" placeholder="Item name…" onkeydown="addKey(event,'${safe}')"><button class="add-confirm" onclick="confirmAdd('${safe}')">Add</button><button class="add-cancel" onclick="cancelAdd()"><i class="ti ti-x" aria-hidden="true"></i></button></div>`
+      :`<button class="add-trigger" onclick="showAdd('${safe}')"><i class="ti ti-plus" aria-hidden="true"></i> Add item</button>`
     }</div></div>`;
   }
-  if (!catsToShow.length) listHtml = '<div class="empty">No items match the current filters.</div>';
+  if(!catsToShow.length) list='<div class="empty">No items match the current filters.</div>';
 
-  const f = packState.tripForm;
-  const formHtml = `<div class="trip-form">
-    <div class="filter-label" style="margin-bottom:10px">Save this pack as a trip</div>
-    ${packState.saveMsg ? `<div class="${packState.saveMsg.startsWith('✓')?'success-msg':'error-msg'}">${packState.saveMsg}</div>` : ''}
+  const f=S.form;
+  const form=`<div class="trip-form">
+    <div class="form-label">Save this pack as a trip</div>
+    ${S.msg?`<div class="${S.msgOk?'success-msg':'error-msg'}">${S.msg}</div>`:''}
     <div class="form-row">
-      <div class="form-field"><label>Trip name *</label><input type="text" value="${f.name}" oninput="packState.tripForm.name=this.value" placeholder="Arizona — June 2026"></div>
-      <div class="form-field"><label>Destination</label><input type="text" value="${f.destination}" oninput="packState.tripForm.destination=this.value" placeholder="Sedona, AZ"></div>
+      <div class="form-field"><label>Trip name *</label><input type="text" value="${f.name}" oninput="S.form.name=this.value" placeholder="Nashville — September 2026"></div>
+      <div class="form-field"><label>Destination</label><input type="text" value="${f.destination}" oninput="S.form.destination=this.value" placeholder="Nashville, TN"></div>
     </div>
     <div class="form-row">
-      <div class="form-field"><label>Season</label><select onchange="packState.tripForm.season=this.value"><option value="">—</option>${TAGS.season.map(s=>`<option${f.season===s?' selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="form-field"><label>Duration</label><select onchange="packState.tripForm.duration=this.value"><option value="">—</option>${TAGS.duration.map(s=>`<option${f.duration===s?' selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="form-field"><label>Transport</label><select onchange="packState.tripForm.transport=this.value"><option value="">—</option>${TAGS.transport.map(s=>`<option${f.transport===s?' selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="form-field"><label>Season</label><select onchange="S.form.season=this.value"><option value="">—</option>${SEASONS.filter(s=>s!=='all').map(s=>`<option${f.season===s?' selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="form-field"><label>Duration</label><select onchange="S.form.duration=this.value"><option value="">—</option>${DURS.filter(s=>s!=='all').map(s=>`<option${f.duration===s?' selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="form-field"><label>Transport</label><select onchange="S.form.transport=this.value"><option value="">—</option>${TRANS.filter(s=>s!=='all').map(s=>`<option${f.transport===s?' selected':''}>${s}</option>`).join('')}</select></div>
     </div>
     <div class="btn-row">
-      <button class="btn primary" onclick="saveTrip()" ${packState.saving?'disabled':''}>${packState.saving?'Saving…':'Save trip'}</button>
+      <button class="btn primary" onclick="saveTrip()" ${S.saving?'disabled':''}>${S.saving?'Saving…':'Save trip'}</button>
       <button class="btn" onclick="clearPack()">Clear pack</button>
     </div>
   </div>`;
 
-  el.innerHTML = `<div class="page-header"><h1>Pack a trip</h1><p>Filter down, toggle items on, save when ready.</p></div>
-    ${filterHtml}
+  el.innerHTML=`
+    <div class="page-header"><h1>Pack a trip</h1><p>Filter down, toggle items on, save when ready.</p></div>
+    <div class="filter-block">
+      <div class="filter-label">Climate</div>
+      <div class="filter-row"><span class="filter-dim">Season</span>${thtml('season',SEASONS)}</div>
+      <div class="filter-row"><span class="filter-dim">Conditions</span>${thtml('conditions',CONDS)}</div>
+      <div class="filter-label" style="margin-top:8px">Logistics</div>
+      <div class="filter-row"><span class="filter-dim">Duration</span>${thtml('duration',DURS)}</div>
+      <div class="filter-row"><span class="filter-dim">Transport</span>${thtml('transport',TRANS)}</div>
+      <div class="filter-row"><span class="filter-dim">Trip type</span>${thtml('type',TYPES)}</div>
+    </div>
     <div class="controls">
       <div class="search-wrap"><input type="text" id="pack-search" placeholder="Search items…" oninput="renderPack()"></div>
       <div class="view-row">
-        <button class="view-btn${packState.view==='all'?' active':''}" onclick="setPackView('all')">All</button>
-        <button class="view-btn${packState.view==='packed'?' active':''}" onclick="setPackView('packed')">Packed</button>
-        <button class="view-btn${packState.view==='flagged'?' active':''}" onclick="setPackView('flagged')">Flagged</button>
+        <button class="view-btn${S.view==='all'?' active':''}" onclick="sv('all')">All</button>
+        <button class="view-btn${S.view==='packed'?' active':''}" onclick="sv('packed')">Packed</button>
+        <button class="view-btn${S.view==='flagged'?' active':''}" onclick="sv('flagged')">Flagged</button>
       </div>
     </div>
     <div class="stats">
-      <div class="stat"><div class="stat-n">${visible.length}</div><div class="stat-l">visible</div></div>
+      <div class="stat"><div class="stat-n">${vis.length}</div><div class="stat-l">visible</div></div>
       <div class="stat"><div class="stat-n">${packed}</div><div class="stat-l">packed</div></div>
       <div class="stat"><div class="stat-n">${flagged}</div><div class="stat-l">flagged</div></div>
     </div>
-    ${listHtml}${formHtml}`;
+    ${list}${form}`;
 
-  if (packState.editingSection) { const i=document.getElementById('sec-edit-'+encodeURIComponent(packState.editingSection)); if(i){i.focus();i.select();} }
-  if (packState.editingItem)    { const i=document.getElementById('item-edit-'+packState.editingItem); if(i){i.focus();i.select();} }
-  if (packState.adding)         { const i=document.getElementById('add-input-'+encodeURIComponent(packState.adding)); if(i)i.focus(); }
+  if(S.editSec){const i=document.getElementById('sei-'+encodeURIComponent(S.editSec));if(i){i.focus();i.select();}}
+  if(S.editItem){const i=document.getElementById('iei-'+S.editItem);if(i){i.focus();i.select();}}
+  if(S.adding){const i=document.getElementById('ai-'+encodeURIComponent(S.adding));if(i)i.focus();}
 }
 
-// ─── Pack interactions ────────────────────────────────────────────────────────
-function stepUp(id)     { packState.qty[id]=(packState.qty[id]||0)+1; renderPack(); }
-function stepDown(id)   { packState.qty[id]=Math.max(0,(packState.qty[id]||0)-1); renderPack(); }
-function toggleWorn(id) { packState.worn.has(id)?packState.worn.delete(id):packState.worn.add(id); renderPack(); }
-function toggleFlag(id) { packState.flagged.has(id)?packState.flagged.delete(id):packState.flagged.add(id); renderPack(); }
-function setPackView(v) { packState.view=v; renderPack(); }
-function clearPack()    { packState.qty={}; packState.worn=new Set(); packState.flagged=new Set(); renderPack(); }
-function toggleSec(cat) { packState.collapsed.has(cat)?packState.collapsed.delete(cat):packState.collapsed.add(cat); renderPack(); }
-function startSecEdit(cat)  { packState.editingSection=cat; packState.editingItem=null; packState.moving=null; renderPack(); }
-function commitSecEdit(old) { const el=document.getElementById('sec-edit-'+encodeURIComponent(old)); const nw=el?.value.trim(); if(nw&&nw!==old)masterItems.forEach(i=>{if(i.cat===old)i.cat=nw;}); packState.editingSection=null; renderPack(); }
-function secEditKey(e,cat)  { if(e.key==='Enter')commitSecEdit(cat); if(e.key==='Escape'){packState.editingSection=null;renderPack();} }
-function startItemEdit(id)  { packState.editingItem=id; packState.editingSection=null; packState.moving=null; renderPack(); }
-function commitItemEdit(id) { const el=document.getElementById('item-edit-'+id); const item=masterItems.find(i=>i.id===id); if(item&&el?.value.trim())item.name=el.value.trim(); packState.editingItem=null; renderPack(); }
-function itemEditKey(e,id)  { if(e.key==='Enter')commitItemEdit(id); if(e.key==='Escape'){packState.editingItem=null;renderPack();} }
-function toggleMove(id)     { packState.moving=packState.moving===id?null:id; renderPack(); }
-function moveItem(id,cat)   { const item=masterItems.find(i=>i.id===id); if(item)item.cat=cat; packState.moving=null; renderPack(); }
-let nextLocalId=9000;
-function showAdd(cat)    { packState.adding=cat; packState.moving=null; renderPack(); }
-function cancelAdd()     { packState.adding=null; renderPack(); }
-function confirmAdd(cat) { const inp=document.getElementById('add-input-'+encodeURIComponent(cat)); const name=inp?.value.trim(); if(!name){cancelAdd();return;} masterItems.push({id:'local-'+(nextLocalId++),name,cat,season:ALL,conditions:ALL_C,duration:ALL_D,transport:ALL_T,type:ALL_Y}); packState.adding=null; renderPack(); }
-function addKey(e,cat)   { if(e.key==='Enter')confirmAdd(cat); if(e.key==='Escape')cancelAdd(); }
-document.addEventListener('click',e=>{ if(packState.moving&&!e.target.closest('.move-picker')&&!e.target.closest('.move-btn')){packState.moving=null;renderPack();} });
-
-// ─── Trips view ───────────────────────────────────────────────────────────────
 async function renderTrips() {
-  const el = document.getElementById('view-trips');
-  el.innerHTML = '<div class="loading">Loading trips…</div>';
+  const el=document.getElementById('view-trips');
+  el.innerHTML='<div class="loading">Loading trips…</div>';
   try {
-    if (!trips.length) await loadTrips();
-    if (!trips.length) { el.innerHTML = '<div class="page-header"><h1>My trips</h1></div><div class="empty">No saved trips yet.</div>'; return; }
-    let html = '<div class="page-header"><h1>My trips</h1><p>Click a trip to update worn/used status.</p></div><div class="trips-list">';
-    for (const trip of trips) {
-      html += `<div class="trip-card" onclick="openTrip('${trip.id}')">
-        <div class="trip-card-name">${trip.name}</div>
-        <div class="trip-card-meta">
-          ${trip.destination?`<span>📍 ${trip.destination}</span>`:''}
-          ${trip.season?`<span>🌤 ${trip.season}</span>`:''}
-          ${trip.duration?`<span>📅 ${trip.duration}</span>`:''}
-          ${trip.transport?`<span>🚗 ${trip.transport}</span>`:''}
-        </div>
+    if(!trips.length){
+      const pages=await fetchAll(TRIPS);
+      trips=pages.map(p=>({
+        id:p.id, name:pv(p.properties,'Trip name'), destination:pv(p.properties,'Destination'),
+        season:pv(p.properties,'Season'), duration:pv(p.properties,'Duration'),
+      }));
+    }
+    if(!trips.length){el.innerHTML='<div class="page-header"><h1>My trips</h1></div><div class="empty">No saved trips yet.</div>';return;}
+    let html='<div class="page-header"><h1>My trips</h1><p>Click a trip to update worn/used status.</p></div>';
+    for(const t of trips){
+      html+=`<div class="trip-card" onclick="openTrip('${t.id}','${t.name.replace(/'/g,"\\'")}')">
+        <div class="trip-card-name">${t.name}</div>
+        <div class="trip-card-meta">${t.destination?`<span>📍 ${t.destination}</span>`:''} ${t.season?`<span>${t.season}</span>`:''} ${t.duration?`<span>${t.duration}</span>`:''}</div>
       </div>`;
     }
-    el.innerHTML = html + '</div>';
-  } catch(e) { el.innerHTML = `<div class="error-msg">Error: ${e.message}</div>`; }
+    el.innerHTML=html;
+  } catch(e){el.innerHTML=`<div class="error-msg">Error: ${e.message}</div>`;}
 }
 
-async function openTrip(tripId) {
-  const el = document.getElementById('view-trips');
-  el.innerHTML = '<div class="loading">Loading trip…</div>';
+async function openTrip(tid, tname) {
+  const el=document.getElementById('view-trips');
+  el.innerHTML='<div class="loading">Loading trip…</div>';
   try {
-    await loadTripItems(tripId);
-    const trip  = trips.find(t=>t.id===tripId);
-    const items = tripItems[tripId]||[];
-    const cats  = [...new Set(items.map(i=>i.cat))];
-    let html = `<div class="page-header"><h1>${trip.name}</h1><p>${[trip.destination,trip.season,trip.duration].filter(Boolean).join(' · ')}</p></div>
+    if(!tripItems[tid]){
+      const pages=await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:tid}});
+      tripItems[tid]=pages.map(p=>({
+        id:p.id, name:pv(p.properties,'Item name'), cat:pv(p.properties,'Category'),
+        qty:pv(p.properties,'Quantity')||1, packed:pv(p.properties,'Packed'), worn:pv(p.properties,'Worn/Used'),
+      }));
+    }
+    const pitems=tripItems[tid]||[];
+    const cats=[...new Set(pitems.map(i=>i.cat))];
+    let html=`<div class="page-header"><h1>${tname}</h1></div>
       <div class="btn-row" style="margin-bottom:1rem"><button class="btn" onclick="renderTrips()">← Back</button></div>`;
-    for (const cat of cats) {
-      const catItems = items.filter(i=>i.cat===cat);
-      html += `<div class="section"><div class="sec-hdr"><div class="sec-title-wrap"><span class="sec-title">${cat}</span></div><span class="sec-count">${catItems.length}</span></div>`;
-      for (const item of catItems) {
-        html += `<div class="item-row${item.packed?' packed':''}${item.worn?' worn':''}">
+    for(const cat of cats){
+      const ci=pitems.filter(i=>i.cat===cat);
+      html+=`<div class="section"><div class="sec-hdr"><div class="sec-title-wrap"><span class="sec-title">${cat}</span></div><span class="sec-count">${ci.length}</span></div>`;
+      for(const item of ci){
+        html+=`<div class="item-row${item.packed?' packed':''}">
           <span class="item-name">${item.name}</span>
           <span style="font-size:12px;color:var(--text3);margin-right:8px">×${item.qty}</span>
           <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer">
-            <input type="checkbox" ${item.worn?'checked':''} onchange="toggleWornSaved('${tripId}','${item.notionId}',this.checked)"> Worn/Used
+            <input type="checkbox" ${item.worn?'checked':''} onchange="updateWorn('${tid}','${item.id}',this.checked)"> Worn/used
           </label>
         </div>`;
       }
-      html += '</div>';
+      html+='</div>';
     }
-    el.innerHTML = html;
-  } catch(e) { el.innerHTML = `<div class="error-msg">Error: ${e.message}</div>`; }
+    el.innerHTML=html;
+  } catch(e){el.innerHTML=`<div class="error-msg">Error: ${e.message}</div>`;}
 }
 
-async function toggleWornSaved(tripId, notionId, value) {
+async function updateWorn(tid, pid, val) {
   try {
-    await updateTripItem(notionId, 'Worn/Used', value);
-    const item = tripItems[tripId]?.find(i=>i.notionId===notionId);
-    if (item) item.worn = value;
-  } catch(e) { alert('Error updating: '+e.message); }
+    await nfetch(`/pages/${pid}`,'PATCH',{properties:{'Worn/Used':{checkbox:val}}});
+    const item=tripItems[tid]?.find(i=>i.id===pid);
+    if(item) item.worn=val;
+  } catch(e){alert('Error: '+e.message);}
 }
 
-// ─── History view ─────────────────────────────────────────────────────────────
 async function renderHistory() {
-  const el = document.getElementById('view-history');
-  el.innerHTML = '<div class="loading">Loading history…</div>';
+  const el=document.getElementById('view-history');
+  el.innerHTML='<div class="loading">Loading history…</div>';
   try {
-    if (!trips.length) await loadTrips();
-    if (!trips.length) { el.innerHTML = '<div class="page-header"><h1>History</h1></div><div class="empty">No trips yet.</div>'; return; }
-    for (const trip of trips) await loadTripItems(trip.id);
-    const itemHistory = {};
-    for (const trip of trips) {
-      for (const item of (tripItems[trip.id]||[])) {
-        if (!itemHistory[item.name]) itemHistory[item.name] = [];
-        itemHistory[item.name].push({ tripName: trip.name, qty: item.qty, worn: item.worn });
+    if(!trips.length){
+      const pages=await fetchAll(TRIPS);
+      trips=pages.map(p=>({id:p.id,name:pv(p.properties,'Trip name')}));
+    }
+    if(!trips.length){el.innerHTML='<div class="page-header"><h1>History</h1></div><div class="empty">No trips yet.</div>';return;}
+    for(const t of trips){
+      if(!tripItems[t.id]){
+        const pages=await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:t.id}});
+        tripItems[t.id]=pages.map(p=>({id:p.id,name:pv(p.properties,'Item name'),qty:pv(p.properties,'Quantity')||1,worn:pv(p.properties,'Worn/Used')}));
       }
     }
-    let html = `<div class="page-header"><h1>History</h1><p>What you've packed and worn across all trips.</p></div>
-      <table class="history-table"><thead><tr><th>Item</th><th>Trips packed</th><th>Times worn</th></tr></thead><tbody>`;
-    for (const [name, records] of Object.entries(itemHistory).sort((a,b)=>b[1].length-a[1].length)) {
-      const worn = records.filter(r=>r.worn).length;
-      html += `<tr><td>${name}</td><td><span class="badge packed">${records.length}×</span> ${records.map(r=>r.tripName).join(', ')}</td><td>${worn>0?`<span class="badge worn">${worn}×</span>`:'<span style="color:var(--text3)">—</span>'}</td></tr>`;
+    const hist={};
+    for(const t of trips) for(const i of (tripItems[t.id]||[])){
+      if(!hist[i.name])hist[i.name]=[];
+      hist[i.name].push({trip:t.name,qty:i.qty,worn:i.worn});
     }
-    el.innerHTML = html + '</tbody></table>';
-  } catch(e) { el.innerHTML = `<div class="error-msg">Error: ${e.message}</div>`; }
+    let html=`<div class="page-header"><h1>History</h1><p>What you've packed and worn across all trips.</p></div>
+      <table class="history-table"><thead><tr><th>Item</th><th>Trips packed</th><th>Worn</th></tr></thead><tbody>`;
+    for(const [name,recs] of Object.entries(hist).sort((a,b)=>b[1].length-a[1].length)){
+      const w=recs.filter(r=>r.worn).length;
+      html+=`<tr><td>${name}</td><td><span class="badge packed">${recs.length}×</span> ${recs.map(r=>r.trip).join(', ')}</td><td>${w>0?`<span class="badge worn">${w}×</span>`:'<span style="color:var(--text3)">—</span>'}</td></tr>`;
+    }
+    el.innerHTML=html+'</tbody></table>';
+  } catch(e){el.innerHTML=`<div class="error-msg">Error: ${e.message}</div>`;}
 }
 
-// ─── Init ─────────────────────────────────────────────────────────────────────
-async function init() {
-  if (!getToken()) { showSetup(); return; }
-  document.getElementById('setup').style.display = 'none';
-  document.getElementById('app-shell').style.display = '';
-  document.getElementById('view-pack').innerHTML = '<div class="loading">Loading your packing list from Notion…</div>';
-  try {
-    await loadMasterItems();
-    renderPack();
-  } catch(e) {
-    if (e.message === 'UNAUTHORIZED') {
-      showSetup('Token not recognized. Please check it and try again.');
-    } else {
-      document.getElementById('view-pack').innerHTML = `<div class="error-msg">Could not connect to Notion: ${e.message}</div>`;
-    }
-  }
+function showTab(t) {
+  curTab=t;
+  ['pack','trips','history'].forEach(k=>{
+    document.getElementById('view-'+k).style.display=k===t?'':'none';
+    document.getElementById('tab-'+k).className='nav-btn'+(k===t?' active':'');
+  });
+  if(t==='trips') renderTrips();
+  if(t==='history') renderHistory();
 }
 
-init();
+async function reload() { items=[]; trips=[]; tripItems={}; await loadItems(); }
+
+loadItems();
