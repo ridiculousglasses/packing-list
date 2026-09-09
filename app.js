@@ -20,7 +20,7 @@ let S = {
   qty:{}, flagged:new Set(),
   filters:{ season:new Set(), conditions:new Set(), duration:new Set(), transport:new Set(), type:new Set() },
   collapsed:new Set(), moving:null, editItem:null, editSec:null, adding:null,
-  view:'all',
+  view:'all', editingTripId:null,
   form:{ name:'', destination:'', season:'', duration:'', transport:'', type:[] },
   saving:false, msg:'', msgOk:false,
 };
@@ -192,6 +192,111 @@ async function saveTrip() {
   } catch(e) { S.saving=false; S.msg='Error: '+e.message; S.msgOk=false; renderPack(); }
 }
 
+async function startEditTrip(tid) {
+  const trEl=document.getElementById('view-trips');
+  if(trEl) trEl.innerHTML='<div class="loading">Loading trip for editing</div>';
+  try {
+    await loadTrips();
+    const t = trips.find(x=>x.id===tid) || {};
+    if(!tripItems[tid]){
+      const pages=await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:tid}});
+      tripItems[tid]=pages.map(p=>({
+        id:p.id, name:pv(p.properties,'Item name'), cat:pv(p.properties,'Category'),
+        qty:pv(p.properties,'Quantity')||1, packed:pv(p.properties,'Packed'), worn:pv(p.properties,'Worn/Used'),
+      }));
+    }
+    S.qty={}; S.flagged=new Set();
+    S.filters={ season:new Set(), conditions:new Set(), duration:new Set(), transport:new Set(), type:new Set() };
+    S.view='all';
+    for (const ti of tripItems[tid]) {
+      let m = items.find(i=>i.name===ti.name);
+      if(!m){
+        m = {id:'local-'+(nextId++), name:ti.name, cat:ti.cat||'Other', season:['all'], conditions:['all'], duration:['all'], transport:['all'], type:['all']};
+        items.push(m);
+      }
+      S.qty[m.id]=ti.qty||1;
+    }
+    S.form={
+      name:t.name||'', destination:t.destination||'',
+      season:t.season||'', duration:t.duration||'', transport:t.transport||'',
+      type:Array.isArray(t.type)?t.type:[],
+    };
+    S.editingTripId=tid; S.msg='';
+    showTab('pack');
+    const s=document.getElementById('pack-search'); if(s) s.value='';
+    renderPack();
+  } catch(e){ if(trEl) trEl.innerHTML=`<div class="error-msg">Error: ${e.message}</div>`; }
+}
+
+function cancelEditTrip() {
+  S.editingTripId=null; S.qty={}; S.flagged=new Set();
+  S.form={name:'',destination:'',season:'',duration:'',transport:'',type:[]};
+  showTab('trips');
+}
+
+async function updateTrip() {
+  const f=S.form, tid=S.editingTripId;
+  if(!f.name){S.msg='Enter a trip name.';S.msgOk=false;renderPack();return;}
+  const packedIds=Object.entries(S.qty).filter(([,q])=>q>0).map(([id])=>id);
+  if(!packedIds.length){S.msg='No items packed — add some or cancel the edit.';S.msgOk=false;renderPack();return;}
+  S.saving=true; S.msg=''; renderPack();
+  try {
+    await nfetch(`/pages/${tid}`,'PATCH',{
+      properties:{
+        'Trip name':  {title:[{text:{content:f.name}}]},
+        'Destination':{rich_text:[{text:{content:f.destination||''}}]},
+        'Season':     f.season   ?{select:{name:f.season}}   :{select:null},
+        'Duration':   f.duration ?{select:{name:f.duration}} :{select:null},
+        'Transport':  f.transport?{select:{name:f.transport}}:{select:null},
+        'Trip type':  {multi_select:f.type.map(n=>({name:n}))},
+      }
+    });
+
+    // Diff against what's currently saved, so unchanged items (and their
+    // Worn/Used status) are left alone rather than deleted and recreated.
+    const oldPages = await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:tid}});
+    const oldByName = {};
+    oldPages.forEach(p=>{ oldByName[pv(p.properties,'Item name')] = p; });
+
+    const newByName = {};
+    for (const iid of packedIds) {
+      const item=items.find(i=>i.id===iid);
+      if(item) newByName[item.name] = {item, qty:S.qty[iid]};
+    }
+
+    for (const [name, page] of Object.entries(oldByName)) {
+      if (newByName[name]) {
+        const {qty} = newByName[name];
+        if (pv(page.properties,'Quantity') !== qty) {
+          await nfetch(`/pages/${page.id}`,'PATCH',{properties:{'Quantity':{number:qty}}});
+        }
+        delete newByName[name];
+      } else {
+        await nfetch(`/pages/${page.id}`,'PATCH',{archived:true});
+      }
+    }
+    for (const {item, qty} of Object.values(newByName)) {
+      await nfetch('/pages','POST',{
+        parent:{database_id:TITEMS},
+        properties:{
+          'Item name':{title:[{text:{content:item.name}}]},
+          'Trip name':{rich_text:[{text:{content:tid}}]},
+          'Category': {select:{name:item.cat}},
+          'Quantity': {number:qty},
+          'Packed':   {checkbox:true},
+          'Worn/Used':{checkbox:false},
+        }
+      });
+    }
+
+    S.saving=false; S.msg=`"${f.name}" updated!`; S.msgOk=true;
+    S.qty={}; S.flagged=new Set(); S.editingTripId=null;
+    S.form={name:'',destination:'',season:'',duration:'',transport:'',type:[]};
+    trips=[]; delete tripItems[tid];
+    renderPack();
+  } catch(e) { S.saving=false; S.msg='Error: '+e.message; S.msgOk=false; renderPack(); }
+}
+
 function renderPack() {
   const el=document.getElementById('view-pack');
   if(!el) return;
@@ -253,8 +358,9 @@ function renderPack() {
   if(!catsToShow.length) list='<div class="empty">No items match the current filters.</div>';
 
   const f=S.form;
+  const editing=!!S.editingTripId;
   const form=`<div class="trip-form">
-    <div class="form-label">Save this pack as a trip</div>
+    <div class="form-label">${editing?`Editing “${f.name||'trip'}” — adjust items, then update`:'Save this pack as a trip'}</div>
     ${S.msg?`<div class="${S.msgOk?'success-msg':'error-msg'}">${S.msg}</div>`:''}
     <div class="form-row">
       <div class="form-field"><label>Trip name *</label><input type="text" value="${f.name}" oninput="S.form.name=this.value" placeholder="Nashville — September 2026"></div>
@@ -266,13 +372,13 @@ function renderPack() {
       <div class="form-field"><label>Transport</label><select onchange="S.form.transport=this.value"><option value="">—</option>${TRANS.filter(s=>s!=='all').map(s=>`<option${f.transport===s?' selected':''}>${s}</option>`).join('')}</select></div>
     </div>
     <div class="btn-row">
-      <button class="btn primary" onclick="saveTrip()" ${S.saving?'disabled':''}>${S.saving?'Saving…':'Save trip'}</button>
-      <button class="btn" onclick="clearPack()">Clear pack</button>
+      <button class="btn primary" onclick="${editing?'updateTrip()':'saveTrip()'}" ${S.saving?'disabled':''}>${S.saving?(editing?'Updating…':'Saving…'):(editing?'Update trip':'Save trip')}</button>
+      ${editing?`<button class="btn" onclick="cancelEditTrip()">Cancel edit</button>`:`<button class="btn" onclick="clearPack()">Clear pack</button>`}
     </div>
   </div>`;
 
   el.innerHTML=`
-    <div class="page-header"><h1>Pack a trip</h1><p>Filter down, toggle items on, save when ready.</p></div>
+    <div class="page-header"><h1>${editing?'Edit trip':'Pack a trip'}</h1><p>${editing?'Adjust what you\'re bringing, then update the saved trip.':'Filter down, toggle items on, save when ready.'}</p></div>
     <div class="filter-block">
       <div class="filter-section">
         <div class="filter-label">Climate</div>
@@ -306,23 +412,29 @@ function renderPack() {
   if(S.adding){const i=document.getElementById('ai-'+encodeURIComponent(S.adding));if(i)i.focus();}
 }
 
+async function loadTrips() {
+  if(trips.length) return trips;
+  const pages=await fetchAll(TRIPS);
+  trips=pages.map(p=>({
+    id:p.id, name:pv(p.properties,'Trip name'), destination:pv(p.properties,'Destination'),
+    season:pv(p.properties,'Season'), duration:pv(p.properties,'Duration'),
+    transport:pv(p.properties,'Transport'), type:pv(p.properties,'Trip type')||[],
+  }));
+  return trips;
+}
+
 async function renderTrips() {
   const el=document.getElementById('view-trips');
   el.innerHTML='<div class="loading">Loading trips</div>';
   try {
-    if(!trips.length){
-      const pages=await fetchAll(TRIPS);
-      trips=pages.map(p=>({
-        id:p.id, name:pv(p.properties,'Trip name'), destination:pv(p.properties,'Destination'),
-        season:pv(p.properties,'Season'), duration:pv(p.properties,'Duration'),
-      }));
-    }
+    await loadTrips();
     if(!trips.length){el.innerHTML='<div class="page-header"><h1>My trips</h1></div><div class="empty">No saved trips yet.</div>';return;}
-    let html='<div class="page-header"><h1>My trips</h1><p>Click a trip to update worn/used status.</p></div>';
+    let html='<div class="page-header"><h1>My trips</h1><p>Click a trip to update worn/used status, or edit to change what\'s packed.</p></div>';
     for(const t of trips){
       html+=`<div class="trip-card" onclick="openTrip('${t.id}','${t.name.replace(/'/g,"\\'")}')">
         <div class="trip-card-name">${t.name}</div>
         <div class="trip-card-meta">${t.destination?`<span>📍 ${t.destination}</span>`:''} ${t.season?`<span>${t.season}</span>`:''} ${t.duration?`<span>${t.duration}</span>`:''}</div>
+        <button class="btn" style="margin-top:8px" onclick="event.stopPropagation();startEditTrip('${t.id}')">Edit</button>
       </div>`;
     }
     el.innerHTML=html;
@@ -343,7 +455,10 @@ async function openTrip(tid, tname) {
     const pitems=tripItems[tid]||[];
     const cats=[...new Set(pitems.map(i=>i.cat))];
     let html=`<div class="page-header"><h1>${tname}</h1></div>
-      <div class="btn-row" style="margin-bottom:1.25rem"><button class="btn" onclick="renderTrips()">← Back</button></div>`;
+      <div class="btn-row" style="margin-bottom:1.25rem">
+        <button class="btn" onclick="renderTrips()">← Back</button>
+        <button class="btn primary" onclick="startEditTrip('${tid}')">Edit trip</button>
+      </div>`;
     for(const cat of cats){
       const ci=pitems.filter(i=>i.cat===cat);
       const col=catColorMap[cat]||'#9090a8';
@@ -375,10 +490,7 @@ async function renderHistory() {
   const el=document.getElementById('view-history');
   el.innerHTML='<div class="loading">Loading history</div>';
   try {
-    if(!trips.length){
-      const pages=await fetchAll(TRIPS);
-      trips=pages.map(p=>({id:p.id,name:pv(p.properties,'Trip name')}));
-    }
+    await loadTrips();
     if(!trips.length){el.innerHTML='<div class="page-header"><h1>History</h1></div><div class="empty">No trips yet.</div>';return;}
     for(const t of trips){
       if(!tripItems[t.id]){
