@@ -38,13 +38,14 @@ let S = {
   qty:{}, flagged:new Set(),
   filters:{ season:new Set(), conditions:new Set(), duration:new Set(), transport:new Set(), type:new Set() },
   collapsed:new Set(), moving:null, editItem:null, editSec:null, adding:null,
-  view:'all', editingTripId:null,
+  view:'all', editingTripId:null, addErr:'',
   form:{ name:'', destination:'' },
   saving:false, msg:'', msgOk:false,
 };
 
 const tripFilter = id => ({ property:'Trip', relation:{ contains:id } });
-const byName = (a,b) => a.name.localeCompare(b.name, undefined, {sensitivity:'base'});
+const byText = (a,b) => a.localeCompare(b, undefined, {sensitivity:'base'});   // A–Z for category names
+const byName = (a,b) => byText(a.name, b.name);                                   // A–Z for items
 const emptyFilters = () => ({ season:new Set(), conditions:new Set(), duration:new Set(), transport:new Set(), type:new Set() });
 
 // The chips describe the trip; they are saved with it and never hide items.
@@ -168,14 +169,36 @@ function commitItemEdit(id) {
   S.editItem=null; renderPack();
 }
 function itemKey(e,id) { if(e.key==='Enter')commitItemEdit(id); if(e.key==='Escape'){S.editItem=null;renderPack();} }
-function showAdd(c)    { S.adding=c; S.moving=null; renderPack(); }
-function cancelAdd()   { S.adding=null; renderPack(); }
-function confirmAdd(c) {
+function showAdd(c)    { S.adding=c; S.addErr=''; S.moving=null; renderPack(); }
+function cancelAdd()   { S.adding=null; S.addErr=''; renderPack(); }
+
+// Add item: appears on screen at once, and is also saved as a new row in the
+// master list in Notion (Item + Category), so it is there next time you open the app.
+async function confirmAdd(c) {
   const inp=document.getElementById('ai-'+encodeURIComponent(c));
   const n=inp?.value.trim();
   if(!n){cancelAdd();return;}
-  items.push({id:'local-'+(nextId++),name:n,cat:c,season:['all'],conditions:['all'],duration:['all'],transport:['all'],type:['all']});
-  S.adding=null; renderPack();
+  if(items.some(i=>i.cat===c && i.name.toLowerCase()===n.toLowerCase())){
+    S.addErr=`"${n}" is already in ${c}.`; renderPack(); return;
+  }
+  const item={id:'local-'+(nextId++),name:n,cat:c,season:['all'],conditions:['all'],duration:['all'],transport:['all'],type:['all'],pending:true};
+  items.push(item);
+  S.adding=null; S.addErr=''; renderPack();
+  try {
+    const r=await nfetch('/pages','POST',{
+      parent:{database_id:MASTER},
+      properties:{ 'Item':{title:[{text:{content:n}}]}, 'Category':{select:{name:c}} }
+    });
+    if(!r||!r.id) throw new Error(r?.message||'Notion did not create the item');
+    const old=item.id;                       // swap the temporary id for the real Notion page id
+    item.id=r.id; item.pending=false;
+    if(S.qty[old]!==undefined){ S.qty[r.id]=S.qty[old]; delete S.qty[old]; }
+    if(S.flagged.has(old)){ S.flagged.delete(old); S.flagged.add(r.id); }
+  } catch(e) {
+    item.pending=false; item.failed=true;
+    S.msg=`"${n}" is on this screen only. Notion did not save it (${e.message}).`; S.msgOk=false;
+  }
+  renderPack();
 }
 function addKey(e,c) { if(e.key==='Enter')confirmAdd(c); if(e.key==='Escape')cancelAdd(); }
 document.addEventListener('click', e => {
@@ -339,11 +362,11 @@ function renderPack() {
   const el=document.getElementById('view-pack');
   if(!el) return;
   const vis=getVis();
-  const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean);
+  const cats=[...new Set(items.map(i=>i.cat))].filter(Boolean).sort(byText);
   const packed=vis.filter(i=>(S.qty[i.id]||0)>0).length;
   const flagged=vis.filter(i=>S.flagged.has(i.id)).length;
   const q=document.getElementById('pack-search')?.value||'';
-  const catsToShow=S.view==='all'&&!q ? cats : [...new Set(vis.map(i=>i.cat))];
+  const catsToShow=S.view==='all'&&!q ? cats : [...new Set(vis.map(i=>i.cat))].sort(byText);
 
   let list='';
   for (const cat of catsToShow) {
@@ -372,7 +395,7 @@ function renderPack() {
       const ocat=cats.filter(c=>c!==item.cat);
       const nm=ed
         ?`<input class="item-edit-input" id="iei-${item.id}" value="${item.name.replace(/"/g,'&quot;')}" onblur="commitItemEdit('${item.id}')" onkeydown="itemKey(event,'${item.id}')" onclick="event.stopPropagation()">`
-        :`<span class="item-name">${item.name}</span>`;
+        :`<span class="item-name">${item.name}${item.pending?' <span style="font-size:11px;color:var(--text3)">saving to Notion…</span>':''}${item.failed?' <span style="font-size:11px;color:var(--text3)" title="Notion did not save this item">⚠ screen only</span>':''}</span>`;
       const picker=mv?`<div class="move-picker"><div class="move-opt current">${item.cat}</div>${ocat.map(c=>`<div class="move-opt" onclick="moveItem('${item.id}','${c.replace(/'/g,"\\'")}')"><span style="color:${catColorMap[c]||'#9090a8'}">●</span> ${c}</div>`).join('')}</div>`:'';
       list+=`<div class="item-row${pk?' packed':''}">
         ${nm}
@@ -389,7 +412,7 @@ function renderPack() {
     }
     const ia=S.adding===cat;
     list+=`<div class="add-row">${ia
-      ?`<div class="add-input-row visible"><input type="text" id="ai-${enc}" placeholder="Item name…" onkeydown="addKey(event,'${safe}')"><button class="add-confirm" onclick="confirmAdd('${safe}')">Add</button><button class="add-cancel" onclick="cancelAdd()"><i class="ti ti-x" aria-hidden="true"></i></button></div>`
+      ?`<div class="add-input-row visible"><input type="text" id="ai-${enc}" placeholder="New item (saves to your master list)…" onkeydown="addKey(event,'${safe}')"><button class="add-confirm" onclick="confirmAdd('${safe}')">Add</button><button class="add-cancel" onclick="cancelAdd()"><i class="ti ti-x" aria-hidden="true"></i></button></div>${S.addErr?`<div class="error-msg" style="margin-top:6px">${S.addErr}</div>`:''}`
       :`<button class="add-trigger" onclick="showAdd('${safe}')"><i class="ti ti-plus" aria-hidden="true"></i> Add item</button>`
     }</div></div>`;
   }
@@ -490,7 +513,7 @@ async function openTrip(tid, tname) {
       }));
     }
     const pitems=tripItems[tid]||[];
-    const cats=[...new Set(pitems.map(i=>i.cat))];
+    const cats=[...new Set(pitems.map(i=>i.cat))].sort(byText);
     let html=`<div class="page-header"><h1>${tname}</h1></div>
       <div class="btn-row" style="margin-bottom:1.25rem">
         <button class="btn" onclick="renderTrips()">← Back</button>
