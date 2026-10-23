@@ -3,11 +3,29 @@ const MASTER = '18f5a4e7ab114c4c9f014d908c2fadd6';
 const TRIPS  = '550336b247364defb7594675f913ac11';
 const TITEMS = 'e7d2a1f307704a52986a9d66e50bba2b';
 
-const SEASONS = ['all','spring','summer','fall','winter'];
-const CONDS   = ['all','cold','heat','humid','mixed/unpredictable','rain/wet','sun'];
-const DURS    = ['all','day trip','weekend+'];
-const TRANS   = ['all','day bag','checked bag'];
-const TYPES   = ['all','beach','concert','day trip','desert','formal','funeral','hiking','leisure','mountains','outdoor','road trip','wedding','work'];
+// Chip options mirror the Trips database in Notion. They are refreshed from
+// Notion on load (loadTripOptions); these are the fallback if Notion can't be read.
+const OPTS = {
+  season:     ['spring','summer','fall','winter'],
+  conditions: ['rain/wet','humid','mixed/unpredictable'],
+  duration:   ['weekend','week','2+ weeks','weekend+'],
+  transport:  ['carry-on','checked bag','road trip'],
+  type:       ['leisure','work','outdoor','formal'],
+};
+const OPT_PROPS = { season:'Season', conditions:'Conditions', duration:'Duration', transport:'Transport', type:'Trip type' };
+const SINGLE = new Set(['season','duration','transport']); // pick-one in Notion (select)
+
+async function loadTripOptions() {
+  try {
+    const db = await nfetch(`/databases/${TRIPS}`);
+    if (!db || !db.properties) return;
+    for (const [dim, prop] of Object.entries(OPT_PROPS)) {
+      const p = db.properties[prop];
+      const opts = (p?.select?.options || p?.multi_select?.options || []).map(o => o.name);
+      if (opts.length) OPTS[dim] = opts;
+    }
+  } catch(e) { /* keep fallback lists */ }
+}
 
 const CAT_COLORS = [
   '#00d4aa','#ff6b6b','#ffd93d','#c77dff','#4cc9f0','#ff9a3c','#ff6eb4','#6bcb77','#a0c4ff'
@@ -21,9 +39,29 @@ let S = {
   filters:{ season:new Set(), conditions:new Set(), duration:new Set(), transport:new Set(), type:new Set() },
   collapsed:new Set(), moving:null, editItem:null, editSec:null, adding:null,
   view:'all', editingTripId:null,
-  form:{ name:'', destination:'', season:'', duration:'', transport:'', type:[] },
+  form:{ name:'', destination:'' },
   saving:false, msg:'', msgOk:false,
 };
+
+const tripFilter = id => ({ property:'Trip', relation:{ contains:id } });
+const byName = (a,b) => a.name.localeCompare(b.name, undefined, {sensitivity:'base'});
+const emptyFilters = () => ({ season:new Set(), conditions:new Set(), duration:new Set(), transport:new Set(), type:new Set() });
+
+// The chips describe the trip; they are saved with it and never hide items.
+function tripSettings() {
+  const f=S.filters;
+  return {
+    season:     [...f.season][0]    || '',
+    duration:   [...f.duration][0]  || '',
+    transport:  [...f.transport][0] || '',
+    conditions: [...f.conditions],
+    type:       [...f.type],
+  };
+}
+function resetTripForm() {
+  S.form={ name:'', destination:'' };
+  S.filters=emptyFilters();
+}
 
 async function nfetch(path, method='GET', body=null) {
   const r = await fetch(WORKER + path, {
@@ -61,6 +99,7 @@ function pv(props, name) {
 async function loadItems() {
   document.getElementById('view-pack').innerHTML = '<div class="loading">Loading your packing list from Notion</div>';
   try {
+    await loadTripOptions();
     const pages = await fetchAll(MASTER);
     items = pages.map(p => ({
       id: p.id,
@@ -82,21 +121,9 @@ async function loadItems() {
   }
 }
 
-function matches(item) {
-  for (const dim of Object.keys(S.filters)) {
-    const f = S.filters[dim];
-    if (f.size === 0) continue;
-    const vals = Array.isArray(item[dim]) ? item[dim] : [item[dim]];
-    if (vals.includes('all')) continue;
-    if (![...f].some(v => vals.includes(v) || v==='all')) return false;
-  }
-  return true;
-}
-
 function getVis() {
   const q = document.getElementById('pack-search')?.value.toLowerCase()||'';
   return items.filter(i => {
-    if (!matches(i)) return false;
     if (q && !i.name.toLowerCase().includes(q)) return false;
     if (S.view==='packed'  && !((S.qty[i.id]||0)>0)) return false;
     if (S.view==='flagged' && !S.flagged.has(i.id))  return false;
@@ -104,13 +131,18 @@ function getVis() {
   });
 }
 
-function thtml(dim, vals) {
-  return `<div class="filter-row dim-${dim}">${vals.map(v =>
-    `<span class="chip${S.filters[dim].has(v)?' on':''}" onclick="tf('${dim}','${v.replace(/'/g,"\\'")}')"> ${v}</span>`
+function chipRow(dim) {
+  return `<div class="filter-row dim-${dim}">${OPTS[dim].map(v =>
+    `<span class="chip${S.filters[dim].has(v)?' on':''}" onclick="tf('${dim}','${v.replace(/'/g,"\\'")}')">${v}</span>`
   ).join('')}</div>`;
 }
 
-function tf(dim, val) { S.filters[dim].has(val)?S.filters[dim].delete(val):S.filters[dim].add(val); renderPack(); }
+function tf(dim, val) {
+  const set=S.filters[dim];
+  if (set.has(val)) set.delete(val);
+  else { if (SINGLE.has(dim)) set.clear(); set.add(val); }
+  renderPack();
+}
 function sv(v) { S.view=v; renderPack(); }
 function toggleSec(c) { S.collapsed.has(c)?S.collapsed.delete(c):S.collapsed.add(c); renderPack(); }
 function stepUp(id)   { S.qty[id]=(S.qty[id]||0)+1; renderPack(); }
@@ -151,7 +183,7 @@ document.addEventListener('click', e => {
 });
 
 async function saveTrip() {
-  const f=S.form;
+  const f=S.form, ts=tripSettings();
   if(!f.name){S.msg='Enter a trip name.';S.msgOk=false;renderPack();return;}
   const packed=Object.entries(S.qty).filter(([,q])=>q>0).map(([id])=>id);
   if(!packed.length){S.msg='No items packed yet.';S.msgOk=false;renderPack();return;}
@@ -162,12 +194,14 @@ async function saveTrip() {
       properties:{
         'Trip name':  {title:[{text:{content:f.name}}]},
         'Destination':{rich_text:[{text:{content:f.destination||''}}]},
-        ...(f.season   ?{'Season':   {select:{name:f.season}}}   :{}),
-        ...(f.duration ?{'Duration': {select:{name:f.duration}}} :{}),
-        ...(f.transport?{'Transport':{select:{name:f.transport}}}:{}),
-        ...(f.type.length?{'Trip type':{multi_select:f.type.map(n=>({name:n}))}}:{}),
+        ...(ts.season   ?{'Season':   {select:{name:ts.season}}}   :{}),
+        ...(ts.duration ?{'Duration': {select:{name:ts.duration}}} :{}),
+        ...(ts.transport?{'Transport':{select:{name:ts.transport}}}:{}),
+        ...(ts.type.length?{'Trip type':{multi_select:ts.type.map(n=>({name:n}))}}:{}),
+        ...(ts.conditions.length?{'Conditions':{multi_select:ts.conditions.map(n=>({name:n}))}}:{}),
       }
     });
+    if (!tp || !tp.id) throw new Error(tp?.message || 'Notion did not create the trip');
     const tid=tp.id;
     for (const iid of packed) {
       const item=items.find(i=>i.id===iid);
@@ -176,7 +210,7 @@ async function saveTrip() {
         parent:{database_id:TITEMS},
         properties:{
           'Item name':{title:[{text:{content:item.name}}]},
-          'Trip name':{rich_text:[{text:{content:tid}}]},
+          'Trip':{relation:[{id:tid}]},
           'Category': {select:{name:item.cat}},
           'Quantity': {number:S.qty[iid]},
           'Packed':   {checkbox:true},
@@ -186,7 +220,7 @@ async function saveTrip() {
     }
     S.saving=false; S.msg=`"${f.name}" saved to Notion!`; S.msgOk=true;
     S.qty={}; S.flagged=new Set();
-    S.form={name:'',destination:'',season:'',duration:'',transport:'',type:[]};
+    resetTripForm();
     trips=[];
     renderPack();
   } catch(e) { S.saving=false; S.msg='Error: '+e.message; S.msgOk=false; renderPack(); }
@@ -199,14 +233,13 @@ async function startEditTrip(tid) {
     await loadTrips();
     const t = trips.find(x=>x.id===tid) || {};
     if(!tripItems[tid]){
-      const pages=await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:tid}});
+      const pages=await fetchAll(TITEMS,tripFilter(tid));
       tripItems[tid]=pages.map(p=>({
         id:p.id, name:pv(p.properties,'Item name'), cat:pv(p.properties,'Category'),
         qty:pv(p.properties,'Quantity')||1, packed:pv(p.properties,'Packed'), worn:pv(p.properties,'Worn/Used'),
       }));
     }
     S.qty={}; S.flagged=new Set();
-    S.filters={ season:new Set(), conditions:new Set(), duration:new Set(), transport:new Set(), type:new Set() };
     S.view='all';
     for (const ti of tripItems[tid]) {
       let m = items.find(i=>i.name===ti.name);
@@ -216,10 +249,14 @@ async function startEditTrip(tid) {
       }
       S.qty[m.id]=ti.qty||1;
     }
-    S.form={
-      name:t.name||'', destination:t.destination||'',
-      season:t.season||'', duration:t.duration||'', transport:t.transport||'',
-      type:Array.isArray(t.type)?t.type:[],
+    S.form={ name:t.name||'', destination:t.destination||'' };
+    // Restore the trip's saved settings onto the chips.
+    S.filters={
+      season:     new Set(t.season    ? [t.season]    : []),
+      duration:   new Set(t.duration  ? [t.duration]  : []),
+      transport:  new Set(t.transport ? [t.transport] : []),
+      conditions: new Set(Array.isArray(t.conditions) ? t.conditions : []),
+      type:       new Set(Array.isArray(t.type)       ? t.type       : []),
     };
     S.editingTripId=tid; S.msg='';
     showTab('pack');
@@ -230,12 +267,12 @@ async function startEditTrip(tid) {
 
 function cancelEditTrip() {
   S.editingTripId=null; S.qty={}; S.flagged=new Set();
-  S.form={name:'',destination:'',season:'',duration:'',transport:'',type:[]};
+  resetTripForm();
   showTab('trips');
 }
 
 async function updateTrip() {
-  const f=S.form, tid=S.editingTripId;
+  const f=S.form, tid=S.editingTripId, ts=tripSettings();
   if(!f.name){S.msg='Enter a trip name.';S.msgOk=false;renderPack();return;}
   const packedIds=Object.entries(S.qty).filter(([,q])=>q>0).map(([id])=>id);
   if(!packedIds.length){S.msg='No items packed — add some or cancel the edit.';S.msgOk=false;renderPack();return;}
@@ -245,16 +282,17 @@ async function updateTrip() {
       properties:{
         'Trip name':  {title:[{text:{content:f.name}}]},
         'Destination':{rich_text:[{text:{content:f.destination||''}}]},
-        'Season':     f.season   ?{select:{name:f.season}}   :{select:null},
-        'Duration':   f.duration ?{select:{name:f.duration}} :{select:null},
-        'Transport':  f.transport?{select:{name:f.transport}}:{select:null},
-        'Trip type':  {multi_select:f.type.map(n=>({name:n}))},
+        'Season':     ts.season   ?{select:{name:ts.season}}   :{select:null},
+        'Duration':   ts.duration ?{select:{name:ts.duration}} :{select:null},
+        'Transport':  ts.transport?{select:{name:ts.transport}}:{select:null},
+        'Trip type':  {multi_select:ts.type.map(n=>({name:n}))},
+        'Conditions': {multi_select:ts.conditions.map(n=>({name:n}))},
       }
     });
 
     // Diff against what's currently saved, so unchanged items (and their
     // Worn/Used status) are left alone rather than deleted and recreated.
-    const oldPages = await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:tid}});
+    const oldPages = await fetchAll(TITEMS,tripFilter(tid));
     const oldByName = {};
     oldPages.forEach(p=>{ oldByName[pv(p.properties,'Item name')] = p; });
 
@@ -280,7 +318,7 @@ async function updateTrip() {
         parent:{database_id:TITEMS},
         properties:{
           'Item name':{title:[{text:{content:item.name}}]},
-          'Trip name':{rich_text:[{text:{content:tid}}]},
+          'Trip':{relation:[{id:tid}]},
           'Category': {select:{name:item.cat}},
           'Quantity': {number:qty},
           'Packed':   {checkbox:true},
@@ -291,7 +329,7 @@ async function updateTrip() {
 
     S.saving=false; S.msg=`"${f.name}" updated!`; S.msgOk=true;
     S.qty={}; S.flagged=new Set(); S.editingTripId=null;
-    S.form={name:'',destination:'',season:'',duration:'',transport:'',type:[]};
+    resetTripForm();
     trips=[]; delete tripItems[tid];
     renderPack();
   } catch(e) { S.saving=false; S.msg='Error: '+e.message; S.msgOk=false; renderPack(); }
@@ -309,7 +347,7 @@ function renderPack() {
 
   let list='';
   for (const cat of catsToShow) {
-    const citems=vis.filter(i=>i.cat===cat);
+    const citems=vis.filter(i=>i.cat===cat).sort(byName);
     const coll=S.collapsed.has(cat);
     const n=citems.filter(i=>(S.qty[i.id]||0)>0).length;
     const esec=S.editSec===cat;
@@ -359,6 +397,9 @@ function renderPack() {
 
   const f=S.form;
   const editing=!!S.editingTripId;
+  const ts=tripSettings();
+  const settingBits=[ts.season,ts.duration,ts.transport,...ts.conditions,...ts.type].filter(Boolean);
+  const summary=settingBits.length?`Saving with: ${settingBits.join(' · ')}`:'No trip details chosen above (optional).';
   const form=`<div class="trip-form">
     <div class="form-label">${editing?`Editing “${f.name||'trip'}” — adjust items, then update`:'Save this pack as a trip'}</div>
     ${S.msg?`<div class="${S.msgOk?'success-msg':'error-msg'}">${S.msg}</div>`:''}
@@ -366,11 +407,7 @@ function renderPack() {
       <div class="form-field"><label>Trip name *</label><input type="text" value="${f.name}" oninput="S.form.name=this.value" placeholder="Nashville — September 2026"></div>
       <div class="form-field"><label>Destination</label><input type="text" value="${f.destination}" oninput="S.form.destination=this.value" placeholder="Nashville, TN"></div>
     </div>
-    <div class="form-row">
-      <div class="form-field"><label>Season</label><select onchange="S.form.season=this.value"><option value="">—</option>${SEASONS.filter(s=>s!=='all').map(s=>`<option${f.season===s?' selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="form-field"><label>Duration</label><select onchange="S.form.duration=this.value"><option value="">—</option>${DURS.filter(s=>s!=='all').map(s=>`<option${f.duration===s?' selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="form-field"><label>Transport</label><select onchange="S.form.transport=this.value"><option value="">—</option>${TRANS.filter(s=>s!=='all').map(s=>`<option${f.transport===s?' selected':''}>${s}</option>`).join('')}</select></div>
-    </div>
+    <div style="font-size:12px;color:var(--text2);margin:6px 0 12px">${summary}</div>
     <div class="btn-row">
       <button class="btn primary" onclick="${editing?'updateTrip()':'saveTrip()'}" ${S.saving?'disabled':''}>${S.saving?(editing?'Updating…':'Saving…'):(editing?'Update trip':'Save trip')}</button>
       ${editing?`<button class="btn" onclick="cancelEditTrip()">Cancel edit</button>`:`<button class="btn" onclick="clearPack()">Clear pack</button>`}
@@ -378,18 +415,18 @@ function renderPack() {
   </div>`;
 
   el.innerHTML=`
-    <div class="page-header"><h1>${editing?'Edit trip':'Pack a trip'}</h1><p>${editing?'Adjust what you\'re bringing, then update the saved trip.':'Filter down, toggle items on, save when ready.'}</p></div>
+    <div class="page-header"><h1>${editing?'Edit trip':'Pack a trip'}</h1><p>${editing?'Adjust what you\'re bringing, then update the saved trip.':'Set the trip details, then toggle items on. The chips describe the trip and save with it; they don\'t hide anything.'}</p></div>
     <div class="filter-block">
       <div class="filter-section">
         <div class="filter-label">Climate</div>
-        <div class="filter-row"><span class="filter-dim">Season</span>${`<div class="filter-row dim-season">${SEASONS.map(v=>`<span class="chip${S.filters.season.has(v)?' on':''}" onclick="tf('season','${v}')">${v}</span>`).join('')}</div>`}</div>
-        <div class="filter-row"><span class="filter-dim">Conditions</span>${`<div class="filter-row dim-conditions">${CONDS.map(v=>`<span class="chip${S.filters.conditions.has(v)?' on':''}" onclick="tf('conditions','${v.replace(/'/g,"\\'")}')"> ${v}</span>`).join('')}</div>`}</div>
+        <div class="filter-row"><span class="filter-dim">Season</span>${chipRow('season')}</div>
+        <div class="filter-row"><span class="filter-dim">Conditions</span>${chipRow('conditions')}</div>
       </div>
       <div class="filter-section">
         <div class="filter-label">Logistics</div>
-        <div class="filter-row"><span class="filter-dim">Duration</span><div class="filter-row dim-duration">${DURS.map(v=>`<span class="chip${S.filters.duration.has(v)?' on':''}" onclick="tf('duration','${v}')">${v}</span>`).join('')}</div></div>
-        <div class="filter-row"><span class="filter-dim">Transport</span><div class="filter-row dim-transport">${TRANS.map(v=>`<span class="chip${S.filters.transport.has(v)?' on':''}" onclick="tf('transport','${v}')">${v}</span>`).join('')}</div></div>
-        <div class="filter-row"><span class="filter-dim">Trip type</span><div class="filter-row dim-type">${TYPES.map(v=>`<span class="chip${S.filters.type.has(v)?' on':''}" onclick="tf('type','${v.replace(/'/g,"\\'")}')"> ${v}</span>`).join('')}</div></div>
+        <div class="filter-row"><span class="filter-dim">Duration</span>${chipRow('duration')}</div>
+        <div class="filter-row"><span class="filter-dim">Transport</span>${chipRow('transport')}</div>
+        <div class="filter-row"><span class="filter-dim">Trip type</span>${chipRow('type')}</div>
       </div>
     </div>
     <div class="controls">
@@ -418,7 +455,7 @@ async function loadTrips() {
   trips=pages.map(p=>({
     id:p.id, name:pv(p.properties,'Trip name'), destination:pv(p.properties,'Destination'),
     season:pv(p.properties,'Season'), duration:pv(p.properties,'Duration'),
-    transport:pv(p.properties,'Transport'), type:pv(p.properties,'Trip type')||[],
+    transport:pv(p.properties,'Transport'), type:pv(p.properties,'Trip type')||[], conditions:pv(p.properties,'Conditions')||[],
   }));
   return trips;
 }
@@ -446,7 +483,7 @@ async function openTrip(tid, tname) {
   el.innerHTML='<div class="loading">Loading trip</div>';
   try {
     if(!tripItems[tid]){
-      const pages=await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:tid}});
+      const pages=await fetchAll(TITEMS,tripFilter(tid));
       tripItems[tid]=pages.map(p=>({
         id:p.id, name:pv(p.properties,'Item name'), cat:pv(p.properties,'Category'),
         qty:pv(p.properties,'Quantity')||1, packed:pv(p.properties,'Packed'), worn:pv(p.properties,'Worn/Used'),
@@ -460,7 +497,7 @@ async function openTrip(tid, tname) {
         <button class="btn primary" onclick="startEditTrip('${tid}')">Edit trip</button>
       </div>`;
     for(const cat of cats){
-      const ci=pitems.filter(i=>i.cat===cat);
+      const ci=pitems.filter(i=>i.cat===cat).sort(byName);
       const col=catColorMap[cat]||'#9090a8';
       html+=`<div class="section"><div class="sec-hdr"><div class="sec-title-wrap"><span class="sec-dot" style="background:${col}"></span><span class="sec-title" style="color:${col}">${cat}</span></div><span class="sec-count">${ci.length}</span></div>`;
       for(const item of ci){
@@ -494,7 +531,7 @@ async function renderHistory() {
     if(!trips.length){el.innerHTML='<div class="page-header"><h1>History</h1></div><div class="empty">No trips yet.</div>';return;}
     for(const t of trips){
       if(!tripItems[t.id]){
-        const pages=await fetchAll(TITEMS,{property:'Trip name',rich_text:{equals:t.id}});
+        const pages=await fetchAll(TITEMS,tripFilter(t.id));
         tripItems[t.id]=pages.map(p=>({id:p.id,name:pv(p.properties,'Item name'),qty:pv(p.properties,'Quantity')||1,worn:pv(p.properties,'Worn/Used')}));
       }
     }
